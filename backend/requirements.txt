@@ -1,0 +1,23 @@
+# API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Graph & Routing
+networkx>=3.2
+
+# Spatial
+shapely>=2.0.0
+scipy>=1.12.0
+
+# Data
+pandas>=2.1.0
+
+# HTTP client (async elevation API)
+httpx>=0.27.0
+
+# AI (Gemini image analysis)
+google-generativeai>=0.5.0
+
+# Models
+pydantic>=2.5.0
