@@ -1,0 +1,71 @@
+/* Modern Leaflet chrome — minimal basemap + app-native attribution & tile polish */
+
+.accessmap-leaflet .leaflet-container {
+  font-family: var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif !important;
+  font-size: 12px !important;
+  background: radial-gradient(
+    120% 90% at 50% 0%,
+    color-mix(in srgb, var(--background, #ffffff) 94%, var(--brand, #5c32a8) 6%) 0%,
+    #e8ecf2 42%,
+    #e4e9f0 100%
+  );
+}
+
+.dark .accessmap-leaflet .leaflet-container {
+  background: radial-gradient(ellipse 140% 80% at 50% -20%, #2a2635 0%, #14121a 55%, #0f0d14 100%);
+}
+
+.accessmap-leaflet .leaflet-control-attribution {
+  margin: 0 !important;
+  max-width: min(480px, 90vw);
+  padding: 0.3rem 0.7rem 0.35rem !important;
+  border: 1px solid color-mix(in srgb, var(--brand, #5c32a8) 18%, transparent) !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--background, #ffffff) 88%, transparent) !important;
+  color: var(--muted-foreground, #696384) !important;
+  box-shadow:
+    0 1px 2px rgb(23 18 36 / 0.04),
+    0 10px 28px rgb(92 50 168 / 0.07) !important;
+  font-size: 10px !important;
+  letter-spacing: 0.02em !important;
+  line-height: 1.35 !important;
+  -webkit-font-smoothing: antialiased;
+  backdrop-filter: blur(12px);
+}
+
+.dark .accessmap-leaflet .leaflet-control-attribution {
+  background: color-mix(in srgb, var(--card, #1a1724) 86%, transparent) !important;
+  border-color: rgb(255 255 255 / 0.12) !important;
+  color: var(--muted-foreground, #a89fc4) !important;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.25),
+    0 12px 32px rgb(0 0 0 / 0.5) !important;
+}
+
+.accessmap-leaflet .leaflet-control-attribution a {
+  color: var(--foreground, inherit) !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+}
+
+.accessmap-leaflet .leaflet-control-attribution a:hover {
+  color: var(--brand, #5c32a8) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 2px;
+}
+
+.dark .accessmap-leaflet .leaflet-control-attribution a:hover {
+  color: #c4b5fd !important;
+}
+
+/*
+ * Voyager / label tiles: keep typography legible (avoid aggressive desaturation
+ * — that’s what made Positron-style maps feel empty).
+ */
+.accessmap-leaflet .leaflet-tile-pane {
+  filter: saturate(0.92) contrast(1.03);
+}
+
+.dark .accessmap-leaflet .leaflet-tile-pane {
+  filter: saturate(0.78) brightness(0.94) contrast(1.05);
+}
