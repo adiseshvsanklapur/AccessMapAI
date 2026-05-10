@@ -19,8 +19,8 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  fetchRoute, fetchHeatmap, fetchTransit,
-  type RouteResponse, type HeatmapPoint, type TransitStop,
+  fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
+  type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
 } from "@/lib/api";
 
 const PROFILES = [
@@ -33,7 +33,7 @@ const PROFILES = [
 
 type ProfileValue = (typeof PROFILES)[number]["value"];
 
-const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true };
+const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true, accessibilityPoints: true };
 
 // Default locations: Memorial Union → Shields Library
 const DEFAULT_ORIGIN: [number, number] = [38.5422, -121.7494];
@@ -42,6 +42,7 @@ const DEFAULT_DEST: [number, number] = [38.5396, -121.7490];
 const SCORE_LABELS: Record<string, string> = {
   slope: "Slope", surface: "Surface", noise: "Noise", crowd: "Crowd",
   lighting: "Lighting", kerb: "Curb Ramps",
+  crossing_signals: "Audible Crossings", tactile: "Tactile Paving",
 };
 
 export function AccessDashboard() {
@@ -56,10 +57,17 @@ export function AccessDashboard() {
   const [routeData, setRouteData] = useState<RouteResponse | null>(null);
   const [heatmapPoints, setHeatmapPoints] = useState<HeatmapPoint[]>([]);
   const [transitStops, setTransitStops] = useState<TransitStop[]>([]);
+  const [accessibilityPoints, setAccessibilityPoints] = useState<AccessibilityPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendReady, setBackendReady] = useState(false);
   const [clickMode, setClickMode] = useState<"origin" | "dest">("origin");
+
+  // Gemini state
+  const [geminiFile, setGeminiFile] = useState<File | null>(null);
+  const [geminiLoading, setGeminiLoading] = useState(false);
+  const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
+  const [geminiError, setGeminiError] = useState<string | null>(null);
 
   // Fetch route when origin, destination, or profile changes
   useEffect(() => {
@@ -78,11 +86,14 @@ export function AccessDashboard() {
 
   // Fetch heatmap & transit on mount
   useEffect(() => {
-    fetchHeatmap("accessibility_score")
+    fetchHeatmap("crowd_score")
       .then((r) => setHeatmapPoints(r.points))
       .catch(() => {});
     fetchTransit()
       .then((r) => setTransitStops(r.stops))
+      .catch(() => {});
+    fetchAccessibilityPoints()
+      .then(setAccessibilityPoints)
       .catch(() => {});
   }, []);
 
@@ -96,6 +107,26 @@ export function AccessDashboard() {
       setClickMode("origin");
     }
   }, [clickMode]);
+
+  // Handle Gemini upload
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !consentGeminiTerms) return;
+
+    setGeminiFile(file);
+    setGeminiLoading(true);
+    setGeminiResult(null);
+    setGeminiError(null);
+
+    try {
+      const result = await analyzeSidewalkImage(file);
+      setGeminiResult(result);
+    } catch (err: any) {
+      setGeminiError(err.message);
+    } finally {
+      setGeminiLoading(false);
+    }
+  };
 
   const overallScore = routeData ? Math.round(routeData.scores.overall * 100) : 0;
 
@@ -256,6 +287,37 @@ export function AccessDashboard() {
             </CardContent>
           </Card>
 
+          {/* Turn-by-turn directions */}
+          <Card className="flex flex-col overflow-hidden max-h-[300px]">
+            <CardHeader className="pb-3 pt-4 shrink-0 shadow-[0_1px_0_0_var(--border)] z-10">
+              <CardTitle className="font-semibold text-base">
+                Directions
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="overflow-y-auto p-0 z-0">
+              {loading && <div className="p-4 text-sm text-muted-foreground animate-pulse">Computing route…</div>}
+              {!loading && !routeData && <div className="p-4 text-sm text-muted-foreground">Waiting for route…</div>}
+              {routeData && !loading && routeData.directions && (
+                <ul className="divide-y divide-border">
+                  {routeData.directions.map((step) => (
+                    <li key={step.step} className="p-4 py-3 flex gap-4 hover:bg-muted/50 transition-colors">
+                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold font-mono border border-primary/20">
+                        {step.step}
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <p className="text-sm font-medium leading-tight">{step.instruction}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {step.distance_m > 0 ? `${step.distance_m}m · ` : ""}
+                          <span className="capitalize">{step.surface.replace("_", " ")}</span>
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
           <div className="mt-auto hidden pt-3 text-center text-muted-foreground text-xs lg:block">
             {routeData
               ? `Graph: ${routeData.path.length} nodes · ${routeData.distance_m}m`
@@ -271,9 +333,10 @@ export function AccessDashboard() {
               </p>
               <div className="grid gap-2.5">
                 <LayerRow checked={layers.route} onCheckedChange={(c) => setLayers((s) => ({ ...s, route: c }))} label="Route trace" description="Computed accessibility path" colorChip="border-primary/85 bg-primary" />
-                <LayerRow checked={layers.heatmap} onCheckedChange={(c) => setLayers((s) => ({ ...s, heatmap: c }))} label="Heatmap" description="Accessibility score overlay" colorChip="border-purple-700 bg-purple-400" />
+                <LayerRow checked={layers.heatmap} onCheckedChange={(c) => setLayers((s) => ({ ...s, heatmap: c }))} label="Traffic heatmap" description="Crowd density by area" colorChip="border-red-700 bg-red-400" />
                 <LayerRow checked={layers.obstacles} onCheckedChange={(c) => setLayers((s) => ({ ...s, obstacles: c }))} label="Transit stops" description="Unitrans bus stops" colorChip="border-amber-700 bg-amber-400" />
                 <LayerRow checked={layers.dangerZones} onCheckedChange={(c) => setLayers((s) => ({ ...s, dangerZones: c }))} label="Danger zones" description="High-noise crossings" colorChip="border-red-700 bg-red-400" />
+                <LayerRow checked={layers.accessibilityPoints} onCheckedChange={(c) => setLayers((s) => ({ ...s, accessibilityPoints: c }))} label="Accessibility points" description="Ramps, crossings, tactile paving" colorChip="border-blue-700 bg-blue-400" />
               </div>
             </div>
           </div>
@@ -283,6 +346,7 @@ export function AccessDashboard() {
             routeGeoJSON={routeData?.geojson ?? null}
             heatmapPoints={heatmapPoints}
             transitStops={transitStops}
+            accessibilityPoints={accessibilityPoints}
             originLatLon={origin}
             destLatLon={destination}
             onMapClick={handleMapClick}
@@ -292,9 +356,12 @@ export function AccessDashboard() {
             <div className="flex flex-wrap items-center gap-3 md:justify-between">
               <div className="flex flex-wrap gap-2">
                 <LegendSwatch chip="border-primary/85 bg-primary" label="Route" />
-                <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Good" />
-                <LegendSwatch chip="border-amber-600 bg-amber-400/90" label="Fair" />
-                <LegendSwatch chip="border-red-600 bg-red-500/65" label="Poor" />
+                <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Calm" />
+                <LegendSwatch chip="border-amber-600 bg-amber-400/90" label="Moderate" />
+                <LegendSwatch chip="border-red-600 bg-red-500/65" label="Busy" />
+                <LegendSwatch chip="border-blue-600 bg-blue-500/65" label="Crossing" />
+                <LegendSwatch chip="border-purple-600 bg-purple-500/65" label="Tactile" />
+                <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Ramp" />
               </div>
               <p className="text-muted-foreground text-xs md:text-sm">
                 Click map to set {clickMode === "origin" ? "origin" : "destination"} · Pan & zoom enabled
@@ -319,26 +386,78 @@ export function AccessDashboard() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4 pb-6">
-              <Tabs defaultValue="sidewalk" className="w-full">
-                <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
-                  <TabsTrigger value="sidewalk">Sidewalk</TabsTrigger>
-                  <TabsTrigger value="entrance">Entrance</TabsTrigger>
-                  <TabsTrigger value="crosswalk">Crosswalk</TabsTrigger>
-                  <TabsTrigger value="hallway">Hallway</TabsTrigger>
-                </TabsList>
-                {(["sidewalk", "entrance", "crosswalk", "hallway"] as const).map((scene) => (
-                  <TabsContent key={scene} value={scene} className="pt-4">
-                    <div className="flex min-h-[200px] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border/65 bg-muted/15 p-6 text-center backdrop-blur-[2px] md:min-h-[220px]">
-                      <Upload className="size-9 text-muted-foreground/70" aria-hidden />
-                      <div className="space-y-1">
-                        <p className="font-medium text-base">Drag & drop a {scene} photo</p>
-                        <p className="mx-auto max-w-md text-muted-foreground text-sm">Gemini CV analysis coming soon.</p>
+              {!geminiResult ? (
+                <>
+                  <label className="flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border/65 bg-muted/15 p-6 text-center backdrop-blur-[2px] md:min-h-[220px] hover:bg-muted/30 transition-colors">
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} disabled={!consentGeminiTerms || geminiLoading} />
+                    {geminiLoading ? (
+                      <div className="space-y-3">
+                        <Sparkles className="size-9 text-primary animate-pulse mx-auto" aria-hidden />
+                        <p className="font-medium text-base text-primary">Analyzing image with Gemini 2.5 Flash...</p>
                       </div>
-                      <Button type="button" variant="secondary" disabled>Choose file…</Button>
+                    ) : (
+                      <>
+                        <Upload className="size-9 text-muted-foreground/70" aria-hidden />
+                        <div className="space-y-1">
+                          <p className="font-medium text-base">Click or drag & drop a photo</p>
+                          <p className="mx-auto max-w-md text-muted-foreground text-sm">Requires Responsible Use confirmation below.</p>
+                        </div>
+                        <Button type="button" variant="secondary" className="pointer-events-none">Choose file…</Button>
+                      </>
+                    )}
+                  </label>
+                  {geminiError && <p className="text-sm text-red-500 font-medium">Error: {geminiError}</p>}
+                </>
+              ) : (
+                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                  <div className="flex items-center justify-between gap-4 p-4 rounded-xl border bg-muted/30">
+                    <div>
+                      <p className="text-sm text-muted-foreground uppercase tracking-wider font-semibold mb-1">Overall Assessment</p>
+                      <div className="flex items-center gap-3">
+                        <span className="text-3xl font-bold tracking-tight">{geminiResult.overall_score}/100</span>
+                        <Badge variant={geminiResult.wheelchair_accessible ? "default" : "destructive"}>
+                          {geminiResult.wheelchair_accessible ? "Accessible" : "Barriers Detected"}
+                        </Badge>
+                      </div>
                     </div>
-                  </TabsContent>
-                ))}
-              </Tabs>
+                    <Button variant="outline" size="sm" onClick={() => { setGeminiResult(null); setGeminiFile(null); }}>Analyze another</Button>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground uppercase mb-1">Surface Type</p>
+                      <p className="font-medium capitalize">{geminiResult.surface_type}</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground uppercase mb-1">Estimated Slope</p>
+                      <p className="font-medium capitalize">{geminiResult.slope_estimate}</p>
+                    </div>
+                  </div>
+
+                  {geminiResult.hazards.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold">Detected Hazards</p>
+                      <div className="grid gap-2">
+                        {geminiResult.hazards.map((hazard, i) => (
+                          <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-destructive/5">
+                            <Badge variant={hazard.severity === "high" ? "destructive" : "secondary"} className="mt-0.5">
+                              {hazard.severity}
+                            </Badge>
+                            <div>
+                              <p className="font-medium text-sm">{hazard.type}</p>
+                              <p className="text-sm text-muted-foreground">{hazard.description}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="p-4 rounded-lg bg-primary/5 border border-primary/10">
+                    <p className="text-sm leading-relaxed">{geminiResult.explanation}</p>
+                  </div>
+                </div>
+              )}
               <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
                 <Label className="flex cursor-pointer items-start gap-3 text-left text-muted-foreground text-sm">
                   <Checkbox checked={consentGeminiTerms} onCheckedChange={(v) => setConsentGeminiTerms(v === true)} className="mt-1" />
@@ -346,10 +465,6 @@ export function AccessDashboard() {
                     <span className="font-semibold text-foreground">Responsible use flag</span> — confirm rights to imagery.
                   </span>
                 </Label>
-                <Button type="button" className="shrink-0 gap-2" disabled>
-                  <Sparkles className="size-4" aria-hidden />
-                  Run Gemini inspection
-                </Button>
               </div>
             </CardContent>
           </Card>

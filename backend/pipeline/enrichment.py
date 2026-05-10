@@ -32,6 +32,7 @@ class AccessibilityData:
         self.graph: nx.Graph = nx.Graph()
         self.gtfs: dict = {"stops": [], "routes": [], "shapes": {}}
         self.buildings: list[dict] = []
+        self.accessibility_features: list[dict] = []
         self.ready: bool = False
 
     def get_stats(self) -> dict:
@@ -94,6 +95,7 @@ def run_pipeline(
     result.buildings = load_buildings(osm_dir)
     road_nodes, road_ways = load_roads(osm_dir)
     acc_features = load_accessibility_features(osm_dir)
+    result.accessibility_features = acc_features
     lighting = load_lighting(osm_dir)
 
     enrich_graph_with_scores(

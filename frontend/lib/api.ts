@@ -17,6 +17,8 @@ export interface RouteScores {
   crowd: number;
   lighting: number;
   kerb: number;
+  crossing_signals: number;
+  tactile: number;
 }
 
 export interface RoutePathPoint {
@@ -38,6 +40,13 @@ export interface RouteGeoJSON {
   };
 }
 
+export interface DirectionStep {
+  step: number;
+  instruction: string;
+  distance_m: number;
+  surface: string;
+}
+
 export interface RouteResponse {
   origin: { lat: number; lon: number };
   destination: { lat: number; lon: number };
@@ -46,6 +55,7 @@ export interface RouteResponse {
   distance_m: number;
   path: RoutePathPoint[];
   explanation: string;
+  directions: DirectionStep[];
   scores: RouteScores;
   geojson: RouteGeoJSON;
   error?: string;
@@ -84,6 +94,21 @@ export interface TransitResponse {
   routes: TransitRoute[];
 }
 
+export interface Hazard {
+  type: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+}
+
+export interface SidewalkAnalysisResult {
+  overall_score: number;
+  surface_type: string;
+  slope_estimate: string;
+  hazards: Hazard[];
+  wheelchair_accessible: boolean;
+  explanation: string;
+}
+
 export interface Profile {
   name: string;
   display_name: string;
@@ -98,6 +123,13 @@ export interface ServerStats {
   buildings: number;
   ready: boolean;
   [key: string]: unknown;
+}
+
+export interface AccessibilityPoint {
+  lat: number;
+  lon: number;
+  category: string;
+  label: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,4 +187,31 @@ export async function fetchStats(): Promise<ServerStats> {
 
 export async function checkHealth(): Promise<{ status: string; stats: ServerStats }> {
   return apiFetch<{ status: string; stats: ServerStats }>("/");
+}
+
+export async function fetchAccessibilityPoints(
+  bounds?: { north: number; south: number; east: number; west: number },
+): Promise<AccessibilityPoint[]> {
+  const b = bounds ?? { north: 38.56, south: 38.52, east: -121.71, west: -121.78 };
+  const res = await apiFetch<{ count: number; points: AccessibilityPoint[] }>(
+    `/accessibility-points?north=${b.north}&south=${b.south}&east=${b.east}&west=${b.west}`,
+  );
+  return res.points;
+}
+
+export async function analyzeSidewalkImage(file: File): Promise<SidewalkAnalysisResult> {
+  const formData = new FormData();
+  formData.append("image", file);
+
+  const res = await fetch(`${API_URL}/analyze-sidewalk`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to analyze image");
+  }
+
+  return res.json();
 }

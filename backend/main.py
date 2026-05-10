@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from pipeline.enrichment import run_pipeline, AccessibilityData
 from routing.engine import RoutingEngine
 from routing.profiles import list_profiles, get_profile
+from api import vision
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -71,12 +72,13 @@ app = FastAPI(
 # CORS — allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # For local dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(vision.router)
 
 # ---------------------------------------------------------------------------
 # Request/Response models
@@ -281,6 +283,87 @@ async def get_stats():
             stats[f"{key}_max"] = round(max(vals), 3)
 
     return stats
+
+
+@app.get("/accessibility-points")
+async def get_accessibility_points(
+    north: float = Query(38.56),
+    south: float = Query(38.52),
+    east: float = Query(-121.71),
+    west: float = Query(-121.78),
+):
+    """
+    Return categorized accessibility infrastructure points for map display.
+
+    Categories: crossing, kerb_lowered, kerb_raised, tactile_paving,
+                wheelchair_yes, wheelchair_limited, wheelchair_no
+    """
+    if app_data is None:
+        raise HTTPException(status_code=503, detail="Server still loading data")
+
+    points = []
+    for feat in app_data.accessibility_features:
+        lat = feat.get("lat")
+        lon = feat.get("lon")
+        if lat is None or lon is None:
+            continue
+
+        # Filter by bounds
+        if not (south <= lat <= north and west <= lon <= east):
+            continue
+
+        tags = feat.get("tags", {})
+
+        # Categorize
+        if "kerb" in tags:
+            kerb_val = tags["kerb"]
+            if kerb_val in ("lowered", "flush"):
+                category = "kerb_lowered"
+                label = f"Lowered Kerb ({kerb_val})"
+            elif kerb_val == "raised":
+                category = "kerb_raised"
+                label = "Raised Kerb"
+            else:
+                category = "kerb_lowered"
+                label = f"Kerb ({kerb_val})"
+        elif tags.get("tactile_paving") == "yes":
+            category = "tactile_paving"
+            label = "Tactile Paving"
+        elif tags.get("highway") == "crossing":
+            crossing_type = tags.get("crossing", "unmarked")
+            category = "crossing"
+            label = f"Crossing ({crossing_type})"
+        elif "wheelchair" in tags:
+            wc = tags["wheelchair"]
+            if wc == "yes":
+                category = "wheelchair_yes"
+                label = "Wheelchair Accessible"
+            elif wc == "limited":
+                category = "wheelchair_limited"
+                label = "Wheelchair Limited"
+            else:
+                category = "wheelchair_no"
+                label = "Not Wheelchair Accessible"
+        else:
+            category = "crossing"
+            label = "Accessibility Feature"
+
+        # Add tactile paving info if present alongside other tags
+        extra = ""
+        if category != "tactile_paving" and tags.get("tactile_paving") == "yes":
+            extra = " · Tactile Paving"
+
+        points.append({
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+            "category": category,
+            "label": label + extra,
+        })
+
+    return {
+        "count": len(points),
+        "points": points,
+    }
 
 
 # ---------------------------------------------------------------------------

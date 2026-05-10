@@ -21,3 +21,6 @@ google-generativeai>=0.5.0
 
 # Models
 pydantic>=2.5.0
+
+google-genai
+python-multipart
