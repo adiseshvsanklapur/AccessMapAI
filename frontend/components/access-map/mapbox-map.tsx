@@ -18,7 +18,7 @@ import Map, {
 } from "react-map-gl/mapbox";
 import type { MapMouseEvent, MapRef } from "react-map-gl/mapbox";
 
-import { formatAffectedProfilesList, formatHazardType } from "@/lib/hazard-labels";
+import { formatAffectedProfile, formatHazardType } from "@/lib/hazard-labels";
 
 import type { AccessibilityMapProps } from "./types";
 
@@ -430,20 +430,50 @@ export function AccessibilityMapboxMap({
                     closeOnClick={false}
                     onClose={() => setHoverHazardId(null)}
                     offset={14}
-                    className="[&_.mapboxgl-popup-content]:rounded-xl [&_.mapboxgl-popup-content]:border [&_.mapboxgl-popup-content]:border-border/70 [&_.mapboxgl-popup-content]:bg-background/95 [&_.mapboxgl-popup-content]:p-3 [&_.mapboxgl-popup-content]:shadow-[0_16px_40px_-28px_rgba(0,0,0,0.45)]"
+                    className="[&_.mapboxgl-popup-content]:overflow-hidden [&_.mapboxgl-popup-content]:rounded-2xl [&_.mapboxgl-popup-content]:border [&_.mapboxgl-popup-content]:border-border/70 [&_.mapboxgl-popup-content]:bg-card/95 [&_.mapboxgl-popup-content]:backdrop-blur-md [&_.mapboxgl-popup-content]:p-0 [&_.mapboxgl-popup-content]:shadow-[0_24px_60px_-36px_rgba(0,0,0,0.75)] [&_.mapboxgl-popup-tip]:!border-t-card/95"
                   >
-                    <div className="flex max-w-[240px] flex-col gap-1">
-                      <div className="text-xs font-semibold leading-snug text-foreground">
-                        {formatHazardType(hazard.type)}
-                      </div>
-                      {hazard.description ? (
-                        <div className="whitespace-normal text-[11px] leading-snug text-muted-foreground">
-                          {hazard.description}
+                    <div className="w-[260px]">
+                      <div className="flex items-start gap-2 border-border/60 border-b bg-background/40 px-3 py-2.5">
+                        <span className="mt-0.5 grid h-7 w-7 place-items-center rounded-lg bg-destructive/15 text-destructive ring-1 ring-destructive/30">
+                          <span className="h-2.5 w-2.5 rounded-full bg-destructive" aria-hidden />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-semibold text-sm leading-snug text-foreground">
+                            {formatHazardType(hazard.type)}
+                          </div>
+                          <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                            Reported hazard
+                          </div>
                         </div>
-                      ) : null}
-                      <div className="text-[11px] leading-snug text-destructive">
-                        <span className="font-medium text-foreground/80">Affects: </span>
-                        {formatAffectedProfilesList(hazard.affected_profiles)}
+                      </div>
+
+                      <div className="space-y-2 px-3 py-2.5">
+                        {hazard.description ? (
+                          <div className="whitespace-normal text-xs leading-relaxed text-foreground/85">
+                            {hazard.description}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">No description provided.</div>
+                        )}
+
+                        {hazard.affected_profiles?.length ? (
+                          <div className="space-y-1">
+                            <div className="text-[11px] font-medium text-muted-foreground">Affects</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {hazard.affected_profiles.slice(0, 6).map((p) => (
+                                <span
+                                  key={p}
+                                  className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] text-foreground/85"
+                                >
+                                  {formatAffectedProfile(p)}
+                                </span>
+                              ))}
+                              {hazard.affected_profiles.length > 6 ? (
+                                <span className="text-[11px] text-muted-foreground">+{hazard.affected_profiles.length - 6}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </Popup>

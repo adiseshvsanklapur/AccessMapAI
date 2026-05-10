@@ -29,6 +29,7 @@ AccessMap AI replaces "shortest" with **per-profile, hazard-aware, explainable**
 | **Live community hazards** | Users drop pins for construction, broken ramps, blocked sidewalks, etc. Hazards are stored in Supabase, tagged with the profiles they affect, and used to **steer routes around them** and **lower the route score** when a relevant hazard is on the path. |
 | **AI sidewalk analysis**   | Upload a photo of a sidewalk/entrance/crosswalk → Gemini returns surface type, slope estimate, hazards, a 0–100 accessibility score, and a wheelchair verdict, with sanity-checked post-processing.                                                         |
 | **Explainable routes**     | Every route comes back with a per-factor score breakdown (slope, surface, lighting, hazards, etc.) and a plain-English "Why this route" paragraph.                                                                                                          |
+| **Spoken directions**      | The Directions card has Read aloud / Pause / Stop controls powered by the browser's Web Speech API. Each turn is queued as its own utterance, the currently-spoken step is highlighted in the list, and speech auto-cancels when the route changes.        |
 | **Heatmaps & overlays**    | Configurable heatmaps for `accessibility_score`, `noise_score`, `crowd_score`, `lighting_score`, `surface_score`, `kerb_score`. Accessibility-feature points (curb ramps, tactile paving, crossings) are queryable per bounds.                              |
 | **Authenticated profiles** | Supabase auth with a per-user accessibility profile (routing preference + free-form notes).                                                                                                                                                                 |
 
@@ -279,6 +280,19 @@ Penalties cap at 0.7. Output:
 ### Why this route
 
 `_generate_explanation()` aggregates path stats (avg slope, surface, lighting, noise, crowd, crossing-signal, tactile, sidewalk ratio) and emits a profile-aware paragraph in plain English.
+
+### Spoken directions
+
+The Directions card in `/app` can read each turn out loud — useful for blind / low-vision users, or anyone who can't keep their eyes on the screen.
+
+- Implemented as a `useDirectionsSpeech` hook in `frontend/components/access-dashboard.tsx` over the browser's [`window.speechSynthesis`](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis) API — no extra deps, no server round-trip.
+- Each direction step is queued as its own `SpeechSynthesisUtterance`, formatted as `"Step N. <instruction>. <distance> meters."`.
+- `onstart` / `onend` callbacks update a `currentStep` state, which highlights the active step in the list (primary tint + filled badge) so visual users can follow along.
+- Controls: **Read aloud** (or **Resume** when paused) · **Pause** · **Stop**. Buttons only render when `speechSynthesis` is supported, so older browsers degrade gracefully.
+- Speech is automatically cancelled when `routeData.directions` changes (new route) and on component unmount, so old utterances never bleed into a freshly-computed route.
+- All controls have explicit `aria-label`s for screen-reader users.
+
+> Note: the Web Speech API uses voices already installed on the user's OS; quality varies by platform.
 
 ---
 

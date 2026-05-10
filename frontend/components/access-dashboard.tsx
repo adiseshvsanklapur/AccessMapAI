@@ -2,12 +2,12 @@
 
 import {
   Accessibility, AlertTriangle, Bus, Camera, CircleDot, Ear, Flag, Footprints,
-  Info, LogIn, MapPin, MapPinned, Moon, MoveHorizontal, Navigation, Route,
-  Sparkles, Upload, User, UserPlus, UserRound, Users, X,
+  Info, LogIn, MapPin, MapPinned, Moon, MoveHorizontal, Navigation, Pause, Route,
+  Sparkles, Square, Upload, User, UserPlus, UserRound, Users, Volume2, X,
 } from "lucide-react";
 import Link from "next/link";
 import type { ComponentType, SVGProps } from "react";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { MapView } from "@/components/access-map/map-view";
@@ -56,6 +56,102 @@ const SCORE_LABELS: Record<string, string> = {
 
 type ClickMode = "origin" | "dest" | "hazard";
 
+/* -------------------------------------------------------------------------- */
+/*                  Text-to-speech for turn-by-turn directions                */
+/* -------------------------------------------------------------------------- */
+type SpeechState = "idle" | "speaking" | "paused";
+
+type DirectionLike = {
+  step: number;
+  instruction: string;
+  distance_m?: number;
+};
+
+function useDirectionsSpeech(directions: DirectionLike[] | undefined) {
+  const [supported, setSupported] = useState(false);
+  const [state, setState] = useState<SpeechState>("idle");
+  const [currentStep, setCurrentStep] = useState<number | null>(null);
+  const directionsRef = useRef(directions);
+  directionsRef.current = directions;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setSupported(typeof window.speechSynthesis !== "undefined");
+  }, []);
+
+  // Stop any in-flight speech when the route (and therefore directions) changes,
+  // and on unmount. Otherwise old steps bleed into a freshly-computed route.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    setState("idle");
+    setCurrentStep(null);
+  }, [directions]);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  const stop = useCallback(() => {
+    if (!supported) return;
+    window.speechSynthesis.cancel();
+    setState("idle");
+    setCurrentStep(null);
+  }, [supported]);
+
+  const play = useCallback(() => {
+    if (!supported) return;
+    const steps = directionsRef.current;
+    if (!steps || steps.length === 0) return;
+
+    if (state === "paused") {
+      window.speechSynthesis.resume();
+      setState("speaking");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+
+    steps.forEach((step, i) => {
+      const dist =
+        typeof step.distance_m === "number" && step.distance_m > 0
+          ? ` ${Math.round(step.distance_m)} meters.`
+          : "";
+      const u = new SpeechSynthesisUtterance(
+        `Step ${step.step}. ${step.instruction}.${dist}`,
+      );
+      u.rate = 1;
+      u.pitch = 1;
+      u.onstart = () => setCurrentStep(step.step);
+      u.onend = () => {
+        if (i === steps.length - 1) {
+          setState("idle");
+          setCurrentStep(null);
+        }
+      };
+      u.onerror = () => {
+        setState("idle");
+        setCurrentStep(null);
+      };
+      window.speechSynthesis.speak(u);
+    });
+
+    setState("speaking");
+  }, [supported, state]);
+
+  const pause = useCallback(() => {
+    if (!supported || state !== "speaking") return;
+    window.speechSynthesis.pause();
+    setState("paused");
+  }, [supported, state]);
+
+  return { supported, state, currentStep, play, pause, stop };
+}
+
 export function AccessDashboard() {
   const scoringId = useId();
   const {
@@ -75,6 +171,7 @@ export function AccessDashboard() {
   const [origin, setOrigin] = useState<[number, number] | null>(DEFAULT_ORIGIN);
   const [destination, setDestination] = useState<[number, number] | null>(DEFAULT_DEST);
   const [routeData, setRouteData] = useState<RouteResponse | null>(null);
+  const speech = useDirectionsSpeech(routeData?.directions);
   const [heatmapPoints, setHeatmapPoints] = useState<HeatmapPoint[]>([]);
   const [transitStops, setTransitStops] = useState<TransitStop[]>([]);
   const [accessibilityPoints, setAccessibilityPoints] = useState<AccessibilityPoint[]>([]);
@@ -491,27 +588,87 @@ export function AccessDashboard() {
           {/* Turn-by-turn directions */}
           <Card className="flex flex-col overflow-hidden max-h-[300px]">
             <CardHeader className="pb-3 pt-4 shrink-0 shadow-[0_1px_0_0_var(--border)] z-10">
-              <CardTitle className="font-semibold text-base">Directions</CardTitle>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="font-semibold text-base">Directions</CardTitle>
+                {speech.supported && routeData?.directions && routeData.directions.length > 0 ? (
+                  <div className="flex items-center gap-1">
+                    {speech.state === "speaking" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 gap-1.5 px-2 text-xs"
+                        onClick={speech.pause}
+                        aria-label="Pause spoken directions"
+                      >
+                        <Pause className="h-3.5 w-3.5" aria-hidden />
+                        Pause
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 gap-1.5 px-2 text-xs"
+                        onClick={speech.play}
+                        aria-label={speech.state === "paused" ? "Resume spoken directions" : "Read directions aloud"}
+                      >
+                        <Volume2 className="h-3.5 w-3.5" aria-hidden />
+                        {speech.state === "paused" ? "Resume" : "Read aloud"}
+                      </Button>
+                    )}
+                    {speech.state !== "idle" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={speech.stop}
+                        aria-label="Stop spoken directions"
+                      >
+                        <Square className="h-3 w-3" aria-hidden />
+                        Stop
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </CardHeader>
             <CardContent className="overflow-y-auto p-0 z-0">
               {loading && <div className="p-4 text-sm text-muted-foreground animate-pulse">Computing route…</div>}
               {!loading && !routeData && <div className="p-4 text-sm text-muted-foreground">Waiting for route…</div>}
               {routeData && !loading && routeData.directions && (
                 <ul className="divide-y divide-border">
-                  {routeData.directions.map((step) => (
-                    <li key={step.step} className="p-4 py-3 flex gap-4 hover:bg-muted/40 transition-colors">
-                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold font-mono border border-primary/25">
-                        {step.step}
-                      </div>
-                      <div className="flex-1 space-y-1">
-                        <p className="text-sm font-medium leading-tight">{step.instruction}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {step.distance_m > 0 ? `${step.distance_m}m · ` : ""}
-                          <span className="capitalize">{step.surface.replace("_", " ")}</span>
-                        </p>
-                      </div>
-                    </li>
-                  ))}
+                  {routeData.directions.map((step) => {
+                    const active = speech.currentStep === step.step;
+                    return (
+                      <li
+                        key={step.step}
+                        className={cn(
+                          "p-4 py-3 flex gap-4 transition-colors",
+                          active ? "bg-primary/[0.08]" : "hover:bg-muted/40",
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold font-mono transition-colors",
+                            active
+                              ? "bg-primary text-primary-foreground border border-primary"
+                              : "bg-primary/10 text-primary border border-primary/25",
+                          )}
+                        >
+                          {step.step}
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <p className="text-sm font-medium leading-tight">{step.instruction}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {step.distance_m > 0 ? `${step.distance_m}m · ` : ""}
+                            <span className="capitalize">{step.surface.replace("_", " ")}</span>
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </CardContent>
