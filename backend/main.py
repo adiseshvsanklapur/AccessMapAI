@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from pipeline.enrichment import run_pipeline, AccessibilityData
 from routing.engine import RoutingEngine
 from routing.profiles import list_profiles, get_profile
-from api import vision
+from api import vision, hazards
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -79,6 +79,7 @@ app.add_middleware(
 )
 
 app.include_router(vision.router)
+app.include_router(hazards.router)
 
 # ---------------------------------------------------------------------------
 # Request/Response models
@@ -88,7 +89,7 @@ class RouteRequest(BaseModel):
     origin_lon: float
     dest_lat: float
     dest_lon: float
-    profile: str = "default"
+    profiles: List[str] = ["default"]
 
 
 class HeatmapRequest(BaseModel):
@@ -128,12 +129,15 @@ async def compute_route(req: RouteRequest):
     if router is None:
         raise HTTPException(status_code=503, detail="Server still loading data")
 
+    active_hazards = hazards.get_active_hazards_list()
+    
     result = router.route(
         origin_lat=req.origin_lat,
         origin_lon=req.origin_lon,
         dest_lat=req.dest_lat,
         dest_lon=req.dest_lon,
-        profile_name=req.profile,
+        profile_names=req.profiles,
+        active_hazards=active_hazards,
     )
 
     if "error" in result:
@@ -151,7 +155,7 @@ async def compute_route_get(
     origin_lon: float = Query(...),
     dest_lat: float = Query(...),
     dest_lon: float = Query(...),
-    profile: str = Query("default"),
+    profiles: List[str] = Query(["default"]),
 ):
     """GET version of /route for easy browser testing."""
     req = RouteRequest(
@@ -159,7 +163,7 @@ async def compute_route_get(
         origin_lon=origin_lon,
         dest_lat=dest_lat,
         dest_lon=dest_lon,
-        profile=profile,
+        profiles=profiles,
     )
     return await compute_route(req)
 

@@ -11,7 +11,7 @@ from scipy.spatial import KDTree
 import numpy as np
 from typing import Optional
 
-from .profiles import AccessibilityProfile, get_profile
+from .profiles import AccessibilityProfile, get_profile, get_combined_profile
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +21,7 @@ def compute_edge_cost(
     u: int, v: int, data: dict,
     profile: AccessibilityProfile,
     G: nx.Graph,
+    active_hazards: Optional[list] = None,
 ) -> float:
     """
     Compute the traversal cost of an edge based on the user's accessibility profile.
@@ -97,6 +98,31 @@ def compute_edge_cost(
     tactile = data.get("tactile_score", 0.5)
     penalty -= profile.tactile_weight * tactile * 0.3
 
+    # Explicit sidewalk bonus
+    if data.get("is_sidewalk", False):
+        penalty -= profile.sidewalk_weight * 0.4
+
+    # Apply dynamic hazard penalties
+    if active_hazards and (profile.name != "default"):
+        u_data = G.nodes.get(u, {})
+        edge_lat = u_data.get("lat")
+        edge_lon = u_data.get("lon")
+        
+        if edge_lat is not None and edge_lon is not None:
+            for hazard in active_hazards:
+                if profile.name in hazard.affected_profiles:
+                    # Haversine distance
+                    lat1, lon1 = math.radians(edge_lat), math.radians(edge_lon)
+                    lat2, lon2 = math.radians(hazard.lat), math.radians(hazard.lon)
+                    dlat, dlon = lat2 - lat1, lon2 - lon1
+                    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+                    c = 2 * math.asin(math.sqrt(a))
+                    r = 6371000 # Radius of earth in meters
+                    dist_to_hazard = c * r
+                    
+                    if dist_to_hazard < 25:  # within 25 meters
+                        return distance * 50  # Huge penalty to avoid it
+    
     # Ensure penalty doesn't go below -0.5 (route shouldn't be "free")
     penalty = max(penalty, -0.5)
 
@@ -153,36 +179,38 @@ def _generate_explanation(
 ) -> str:
     """Generate a human-readable explanation of why this route was chosen."""
     reasons = []
-
     # Analyze path characteristics
     total_dist = sum(e.get("distance_m", 0) for e in path_edges)
     avg_slope = 0
     max_slope = 0
     has_stairs = any(e.get("has_stairs", False) for e in path_edges)
-    avg_noise = sum(e.get("noise_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
-    avg_crowd = sum(e.get("crowd_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
-    avg_surface = sum(e.get("surface_score", 0.7) for e in path_edges) / max(len(path_edges), 1)
-    avg_lighting = sum(e.get("lighting_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
-
-    slopes = [abs(e.get("slope", 0) or 0) for e in path_edges]
-    if slopes:
-        avg_slope = sum(slopes) / len(slopes)
-        max_slope = max(slopes)
-
+    avg_surface = np.mean([e.get("surface_score", 0.7) for e in path_edges]) if path_edges else 0.7
+    avg_noise = np.mean([e.get("noise_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_crowd = np.mean([e.get("crowd_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_lighting = np.mean([e.get("lighting_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    max_slope = max([abs(e.get("slope", 0)) for e in path_edges]) if path_edges else 0
+    avg_tactile = np.mean([e.get("tactile_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_crossing = np.mean([e.get("crossing_signal_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    sidewalk_ratio = sum(1 for e in path_edges if e.get("is_sidewalk")) / len(path_edges) if path_edges else 0
     reasons.append(f"This route is {total_dist:.0f} meters long")
 
-    # Profile-specific insights
-    if profile.name == "wheelchair":
-        if max_slope <= 5:
-            reasons.append("with gentle slopes throughout")
-        elif max_slope <= 8.33:
-            reasons.append("staying within ADA slope guidelines")
-        if avg_surface > 0.8:
-            reasons.append("on smooth, paved surfaces")
+    # Base insights based on the combined profile name string
+    # combined.name might look like "combined_wheelchair_blind"
+    profile_names = profile.name.replace("combined_", "").split("_") if "combined_" in profile.name else [profile.name]
+    
+    if "wheelchair" in profile_names:
         if not has_stairs:
-            reasons.append("with no stairs")
+            reasons.append("avoiding all stairs")
+        if max_slope <= 5:
+            reasons.append("keeping slopes gentle")
+        if avg_surface > 0.8:
+            reasons.append("prioritizing smooth surfaces")
+        if sidewalk_ratio > 0.6:
+            reasons.append("sticking to designated sidewalks")
+        if avg_tactile > 0.6:
+            reasons.append("utilizing paths with ADA-compliant tactile paving")
 
-    elif profile.name == "blind":
+    if "blind" in profile_names:
         if avg_noise < 0.4:
             reasons.append("through quieter areas for easier orientation")
         if avg_crowd < 0.5:
@@ -205,19 +233,19 @@ def _generate_explanation(
         if avg_surface > 0.7:
             reasons.append("on consistent, predictable surfaces")
 
-    elif profile.name == "neurodivergent":
+    if "neurodivergent" in profile_names:
         if avg_noise < 0.4:
             reasons.append("minimizing noise exposure")
         if avg_crowd < 0.5:
             reasons.append("through calmer, less crowded paths")
 
-    elif profile.name == "elderly":
+    if "elderly" in profile_names:
         if max_slope <= 8:
             reasons.append("with manageable slopes")
         if avg_lighting > 0.6:
             reasons.append("along well-lit paths")
 
-    elif profile.name == "temporary_injury":
+    if "temporary_injury" in profile_names:
         if not has_stairs:
             reasons.append("avoiding all stairs")
         if avg_surface > 0.7:
@@ -357,16 +385,19 @@ class RoutingEngine:
         origin_lon: float,
         dest_lat: float,
         dest_lon: float,
-        profile_name: str = "default",
+        profile_names: list[str] = None,
+        active_hazards: Optional[list] = None,
     ) -> dict:
         """
+        Compute an accessibility-optimized route.
+
         Compute an accessibility-optimized route.
 
         Returns:
             {
                 "origin": {"lat": ..., "lon": ...},
                 "destination": {"lat": ..., "lon": ...},
-                "profile": "wheelchair",
+                "profiles": ["wheelchair", "blind"],
                 "distance_m": 450.2,
                 "path": [{"lat": ..., "lon": ..., "node_id": ...}, ...],
                 "edges": [{edge_data}, ...],
@@ -380,7 +411,10 @@ class RoutingEngine:
                 "geojson": {GeoJSON LineString},
             }
         """
-        profile = get_profile(profile_name)
+        if profile_names is None:
+            profile_names = ["default"]
+            
+        profile = get_combined_profile(profile_names)
 
         # Find nearest graph nodes
         origin_node = find_nearest_node(
@@ -398,7 +432,7 @@ class RoutingEngine:
 
         # Define cost function for this profile
         def cost_func(u, v, data):
-            return compute_edge_cost(u, v, data, profile, self.G)
+            return compute_edge_cost(u, v, data, profile, self.G, active_hazards)
 
         # Run Dijkstra
         try:
@@ -453,7 +487,7 @@ class RoutingEngine:
                 ],
             },
             "properties": {
-                "profile": profile.name,
+                "profiles": profile_names,
                 "distance_m": round(total_distance, 1),
                 "scores": {k: round(v, 3) for k, v in scores.items()},
             },
@@ -465,7 +499,7 @@ class RoutingEngine:
         return {
             "origin": {"lat": origin_lat, "lon": origin_lon},
             "destination": {"lat": dest_lat, "lon": dest_lon},
-            "profile": profile.name,
+            "profiles": profile_names,
             "profile_display": profile.display_name,
             "distance_m": round(total_distance, 1),
             "path": path_coords,
