@@ -1,9 +1,11 @@
 "use client";
 
 import {
-  Accessibility, Camera, Ear, Footprints, Info, MapPinned, Moon,
-  Route, Sparkles, Upload, UserRound,
+  Accessibility, AlertTriangle, Bus, Camera, CircleDot, Ear, Flag, Footprints,
+  Info, MapPin, MapPinned, MoveHorizontal, Moon, Navigation, Route, Sparkles,
+  Upload, UserRound, Users, X,
 } from "lucide-react";
+import type { ComponentType, SVGProps } from "react";
 import { useCallback, useEffect, useId, useState } from "react";
 
 import { MapView } from "@/components/access-map/map-view";
@@ -13,17 +15,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
   fetchHazards, reportHazard,
   type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
-  type HazardReport, type HazardPayload,
+  type HazardReport,
 } from "@/lib/api";
+import { formatAffectedProfile, formatHazardType, formatSeverity } from "@/lib/hazard-labels";
 
 const PROFILES = [
   { value: "wheelchair", title: "Wheelchair", description: "Ramps & slope constraints", icon: Accessibility },
@@ -33,9 +33,7 @@ const PROFILES = [
   { value: "temporary_injury", title: "Temporary injury", description: "Shorter distances", icon: UserRound },
 ] as const;
 
-type ProfileValue = (typeof PROFILES)[number]["value"];
-
-const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true, accessibilityPoints: true, hazards: true };
+const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, accessibilityPoints: true, hazards: true };
 
 // Default locations: Memorial Union → Shields Library
 const DEFAULT_ORIGIN: [number, number] = [38.5422, -121.7494];
@@ -46,6 +44,8 @@ const SCORE_LABELS: Record<string, string> = {
   lighting: "Lighting", kerb: "Curb Ramps",
   crossing_signals: "Audible Crossings", tactile: "Tactile Paving",
 };
+
+type ClickMode = "origin" | "dest" | "hazard";
 
 export function AccessDashboard() {
   const scoringId = useId();
@@ -62,8 +62,7 @@ export function AccessDashboard() {
   const [accessibilityPoints, setAccessibilityPoints] = useState<AccessibilityPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [backendReady, setBackendReady] = useState(false);
-  const [clickMode, setClickMode] = useState<"origin" | "dest" | "hazard">("origin");
+  const [clickMode, setClickMode] = useState<ClickMode>("origin");
 
   // Hazard reporting state
   const [activeHazards, setActiveHazards] = useState<HazardReport[]>([]);
@@ -74,7 +73,6 @@ export function AccessDashboard() {
   const [submittingHazard, setSubmittingHazard] = useState(false);
 
   // Gemini state
-  const [geminiFile, setGeminiFile] = useState<File | null>(null);
   const [geminiLoading, setGeminiLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
@@ -87,7 +85,7 @@ export function AccessDashboard() {
     setError(null);
 
     fetchRoute(origin[0], origin[1], destination[0], destination[1], selectedProfiles)
-      .then((data) => { if (!cancelled) { setRouteData(data); setBackendReady(true); } })
+      .then((data) => { if (!cancelled) { setRouteData(data); } })
       .catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
@@ -110,7 +108,7 @@ export function AccessDashboard() {
       .catch(() => {});
   }, []);
 
-  // Map click handler — alternate between setting origin and destination
+  // Map click handler — routed by current click mode
   const handleMapClick = useCallback((lat: number, lon: number) => {
     if (clickMode === "origin") {
       setOrigin([lat, lon]);
@@ -128,7 +126,6 @@ export function AccessDashboard() {
     const file = e.target.files?.[0];
     if (!file || !consentGeminiTerms) return;
 
-    setGeminiFile(file);
     setGeminiLoading(true);
     setGeminiResult(null);
     setGeminiError(null);
@@ -136,30 +133,151 @@ export function AccessDashboard() {
     try {
       const result = await analyzeSidewalkImage(file);
       setGeminiResult(result);
-    } catch (err: any) {
-      setGeminiError(err.message);
+    } catch (err: unknown) {
+      setGeminiError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
       setGeminiLoading(false);
     }
   };
 
   const overallScore = routeData ? Math.round(routeData.scores.overall * 100) : 0;
+  const grade = overallScore >= 80 ? "Excellent" : overallScore >= 60 ? "Good" : overallScore >= 40 ? "Fair" : "Poor";
+  const gradeColor = overallScore >= 80 ? "#10b981" : overallScore >= 60 ? "#22c55e" : overallScore >= 40 ? "#f59e0b" : "#ef4444";
+
+  // Cancel hazard reporting completely (clears draft pin AND exits hazard mode)
+  const cancelHazard = () => {
+    setDraftHazardLatLon(null);
+    setClickMode("origin");
+    setHazardDesc("");
+  };
+
+  const enterHazardMode = () => {
+    setClickMode("hazard");
+    setDraftHazardLatLon(null);
+  };
+
+  const submitHazard = async () => {
+    if (!draftHazardLatLon) return;
+    setSubmittingHazard(true);
+    try {
+      await reportHazard({
+        lat: draftHazardLatLon[0],
+        lon: draftHazardLatLon[1],
+        type: hazardType,
+        description: hazardDesc,
+        affected_profiles: hazardProfiles,
+      });
+      const updated = await fetchHazards();
+      setActiveHazards(updated);
+      cancelHazard();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubmittingHazard(false);
+    }
+  };
+
+  // Form rendered inside the Mapbox Popup — anchored at the dropped pin
+  const hazardFormPopup = draftHazardLatLon ? (
+    <div className="w-[min(360px,80vw)] rounded-2xl bg-card p-4 text-foreground">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h4 className="flex items-center gap-2 font-semibold text-sm">
+            <AlertTriangle className="size-4 text-amber-400" /> Report a hazard
+          </h4>
+          <p className="mt-0.5 font-mono text-muted-foreground text-[11px]">
+            {draftHazardLatLon[0].toFixed(4)}, {draftHazardLatLon[1].toFixed(4)}
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={cancelHazard}
+          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Hazard type</Label>
+          <select
+            className="w-full rounded-md border border-border/70 bg-background p-2 text-sm focus:border-primary focus:outline-none"
+            value={hazardType}
+            onChange={(e) => setHazardType(e.target.value)}
+          >
+            <option value="construction">Construction / work zone</option>
+            <option value="scooter">Improperly parked scooter</option>
+            <option value="broken_ramp">Broken or missing curb ramp</option>
+            <option value="surface_damage">Severe surface damage</option>
+            <option value="other">Other obstruction</option>
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs">Description</Label>
+          <input
+            type="text"
+            className="w-full rounded-md border border-border/70 bg-background p-2 text-sm focus:border-primary focus:outline-none"
+            placeholder="e.g., Sidewalk completely blocked…"
+            value={hazardDesc}
+            onChange={(e) => setHazardDesc(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs">Affects profiles</Label>
+          <div className="flex flex-wrap gap-1.5">
+            {(["wheelchair", "blind", "elderly", "neurodivergent", "temporary_injury"] as const).map((p) => {
+              const active = hazardProfiles.includes(p);
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => {
+                    if (active) setHazardProfiles(hazardProfiles.filter((x) => x !== p));
+                    else setHazardProfiles([...hazardProfiles, p]);
+                  }}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                    active
+                      ? "border-primary/50 bg-primary/15 text-foreground"
+                      : "border-border/70 bg-muted text-muted-foreground hover:bg-muted/70"
+                  }`}
+                >
+                  {formatAffectedProfile(p)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" size="sm" onClick={cancelHazard}>Cancel</Button>
+          <Button size="sm" disabled={submittingHazard} onClick={submitHazard}>
+            <Flag className="mr-1.5 size-3.5" />
+            {submittingHazard ? "Submitting…" : "Submit hazard"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   return (
-    <div className="flex min-h-svh flex-col bg-white dark:bg-background">
-      <header className="sticky top-0 z-40 border-border/80 border-b bg-white/90 px-4 py-[1.125rem] shadow-[inset_0_-1px_0_0_rgba(92,50,168,0.09)] backdrop-blur-2xl supports-[backdrop-filter]:bg-white/75 dark:bg-background/90 md:px-8">
+    <div className="flex min-h-svh flex-col bg-background">
+      <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 px-4 py-[1.1rem] backdrop-blur-2xl md:px-8">
         <div className="mx-auto flex max-w-[1680px] flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-3">
-              <div className="relative flex size-10 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg shadow-primary/25 ring-2 ring-black/[0.04] dark:shadow-primary/20 dark:ring-white/[0.08]">
+              <div className="relative flex size-10 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-[0_18px_40px_-24px_rgba(124,92,255,0.55)] ring-1 ring-white/[0.12]">
                 <MapPinned className="relative z-10 size-5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.12)]" aria-hidden />
-                <span aria-hidden className="pointer-events-none absolute inset-x-[-40%] top-[-60%] h-[140%] bg-white/30 blur-xl dark:bg-white/10" />
+                <span aria-hidden className="pointer-events-none absolute inset-x-[-40%] top-[-60%] h-[140%] bg-white/10 blur-xl" />
               </div>
               <div className="min-w-0">
                 <p className="truncate font-semibold text-foreground text-lg tracking-tighter">
                   AccessMap AI
                   <Badge variant="secondary" className="ml-2 align-middle font-mono text-[10px] tracking-wide uppercase">
-                    {backendReady ? "Live" : "Connecting…"}
+                    Live
                   </Badge>
                 </p>
                 <p className="text-muted-foreground text-[0.813rem] leading-snug md:max-w-lg">
@@ -168,27 +286,14 @@ export function AccessDashboard() {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 md:justify-end">
-            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
-              <Sparkles className="size-3.5 opacity-70" aria-hidden />
-              Gemini storyboard
-            </Badge>
-            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
-              OSM tiles
-            </Badge>
-            {backendReady && (
-              <Badge className="gap-1.5 rounded-full bg-emerald-500/90 px-3 py-0.5 font-medium text-white">
-                Backend connected
-              </Badge>
-            )}
-          </div>
+          <div className="flex flex-wrap gap-2 md:justify-end" />
         </div>
       </header>
 
       <main className="relative flex flex-1 flex-col lg:flex-row lg:overflow-hidden">
-        <aside className="flex max-h-none w-full flex-col gap-4 border-border/80 border-b bg-white px-4 py-5 lg:max-h-full lg:w-[min(396px,100%)] lg:shrink-0 lg:border-r lg:border-b-0 lg:bg-gradient-to-b lg:from-white lg:to-[#faf8fc] lg:px-7 dark:border-border dark:from-transparent dark:to-transparent dark:bg-transparent">
+        <aside className="flex max-h-none w-full flex-col gap-4 border-border/60 border-b bg-background px-4 py-5 lg:max-h-full lg:w-[min(396px,100%)] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:px-7">
           {/* Profile selector */}
-          <Card className="shadow-md shadow-black/[0.02] ring-1 ring-black/[0.03] dark:shadow-black/35 dark:ring-white/[0.06]">
+          <Card>
             <CardHeader className="pb-3">
               <CardTitle className="font-semibold text-base">Disability profile</CardTitle>
               <CardDescription>Select a profile to remap routing weights.</CardDescription>
@@ -199,10 +304,18 @@ export function AccessDashboard() {
                   const id = `profile-${value}`;
                   const isSelected = selectedProfiles.includes(value);
                   return (
-                    <Label key={value} htmlFor={id} className={`flex cursor-pointer items-start gap-3 rounded-2xl border bg-card/80 px-3.5 py-3 shadow-none transition-colors ${isSelected ? "border-primary/50 bg-primary/5 dark:border-primary/50" : "border-border/60 hover:border-primary/20 hover:bg-muted/45 dark:border-border dark:hover:border-primary/30"}`}>
-                      <Checkbox 
-                        id={id} 
-                        className="mt-1 shrink-0" 
+                    <Label
+                      key={value}
+                      htmlFor={id}
+                      className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-3.5 py-3 transition-colors ${
+                        isSelected
+                          ? "border-primary/60 bg-primary/10"
+                          : "border-border bg-muted/40 hover:border-primary/30 hover:bg-muted/70"
+                      }`}
+                    >
+                      <Checkbox
+                        id={id}
+                        className="mt-1 shrink-0"
                         checked={isSelected}
                         onCheckedChange={(checked) => {
                           if (checked) {
@@ -226,23 +339,23 @@ export function AccessDashboard() {
                 })}
               </div>
               <Separator className="my-4" />
-              <div className="rounded-2xl border border-dashed border-border/70 bg-muted/40 p-3.5 font-mono text-muted-foreground text-[11px] leading-relaxed">
+              <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-3.5 font-mono text-muted-foreground text-[11px] leading-relaxed">
                 <span className="flex items-start gap-2 font-medium text-foreground">
                   <Info className="mt-0.5 size-3.5 shrink-0 opacity-70" aria-hidden />
                   Click the map to set origin (green) then destination (red).
-                  Next click sets: <strong className="text-primary">{clickMode === "origin" ? "Origin" : "Destination"}</strong>
+                  Next click sets: <strong className="text-primary">{clickMode === "origin" ? "Origin" : clickMode === "dest" ? "Destination" : "Hazard"}</strong>
                 </span>
               </div>
             </CardContent>
           </Card>
 
-          {/* Why this route */}
-          <Card className="relative overflow-hidden bg-gradient-to-br from-primary/[0.07] via-card to-muted/40 shadow-[0_16px_40px_-32px_color-mix(in_oklab,var(--primary)_52%,transparent)] ring-2 ring-primary/15 dark:from-primary/[0.13] dark:via-card dark:to-muted/28 dark:ring-primary/25">
-            <span aria-hidden className="pointer-events-none absolute -right-24 -top-24 size-72 rounded-full bg-primary/[0.08] blur-3xl dark:bg-primary/[0.12]" />
-            <CardHeader className="relative pb-2">
+          {/* Combined route analysis: hero score + explanation + breakdown */}
+          <Card className="relative overflow-hidden bg-gradient-to-br from-primary/[0.10] via-card to-card">
+            <span aria-hidden className="pointer-events-none absolute -right-24 -top-24 size-72 rounded-full bg-primary/[0.12] blur-3xl" />
+            <CardHeader className="relative pb-3">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-base tracking-tight">Why this route?</CardTitle>
+                <div className="space-y-1">
+                  <CardTitle id={scoringId} className="text-base tracking-tight">Route analysis</CardTitle>
                   <CardDescription>
                     {routeData ? `${routeData.distance_m}m via ${routeData.profile_display}` : "Select origin & destination"}
                   </CardDescription>
@@ -250,67 +363,66 @@ export function AccessDashboard() {
                 <Route className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
               </div>
             </CardHeader>
-            <CardContent className="relative space-y-3 pb-6 pt-0">
-              {loading && <p className="text-sm text-muted-foreground animate-pulse">Computing route…</p>}
-              {error && <p className="text-sm text-red-500">Error: {error}</p>}
-              {routeData && !loading && (
-                <>
-                  <p className="text-[0.875rem] leading-snug tracking-tight text-foreground/90 md:text-[0.894rem]">
-                    This route was selected <span className="font-semibold text-primary">because</span> it:
+            <CardContent aria-labelledby={scoringId} className="relative space-y-4 pb-6 pt-0">
+              <div className="flex items-center gap-4 rounded-2xl border border-border bg-background/80 p-4">
+                <ScoreRing value={routeData ? overallScore : 0} color={routeData ? gradeColor : "#3f3a52"} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-semibold text-3xl tabular-nums tracking-tight">
+                      {routeData ? overallScore : "—"}
+                    </span>
+                    <span className="text-muted-foreground text-sm">/ 100</span>
+                  </div>
+                  {routeData && (
+                    <Badge
+                      variant="secondary"
+                      className="mt-1 font-medium"
+                      style={{ backgroundColor: `${gradeColor}1f`, color: gradeColor, borderColor: `${gradeColor}33` }}
+                    >
+                      {grade}
+                    </Badge>
+                  )}
+                  <p className="mt-2 text-muted-foreground text-xs">
+                    {routeData ? "Weighted accessibility score for this route" : "Waiting for route…"}
                   </p>
+                </div>
+              </div>
+
+              {loading && <p className="text-sm text-muted-foreground animate-pulse">Computing route…</p>}
+              {error && <p className="text-sm text-red-400">Error: {error}</p>}
+              {routeData && !loading && (
+                <div className="rounded-xl border border-primary/15 bg-primary/[0.06] p-3.5">
+                  <p className="mb-1.5 font-medium text-primary text-xs uppercase tracking-wider">Why this route</p>
                   <p className="text-[0.875rem] leading-relaxed text-foreground/90">
                     {routeData.explanation}
                   </p>
-                </>
+                </div>
               )}
-            </CardContent>
-          </Card>
 
-          {/* Accessibility score */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle id={scoringId} className="font-semibold text-base">
-                Accessibility score
-              </CardTitle>
-              <CardDescription>
-                {routeData ? "Live composite from routing engine" : "Waiting for route…"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent aria-labelledby={scoringId}>
-              <div className="mb-4 flex items-baseline justify-between gap-2">
-                <span className="font-semibold text-3xl tabular-nums tracking-tight">
-                  {routeData ? overallScore : "—"}
-                </span>
-                {routeData && (
-                  <Badge variant="secondary" className="font-medium">
-                    {overallScore >= 80 ? "Excellent" : overallScore >= 60 ? "Good" : overallScore >= 40 ? "Fair" : "Poor"}
-                  </Badge>
-                )}
-              </div>
-              <Progress value={routeData ? overallScore : 0} />
-
-              {/* Score breakdown */}
               {routeData && (
-                <div className="mt-4 space-y-2.5">
-                  {Object.entries(SCORE_LABELS).map(([key, label]) => {
-                    const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
-                    const pct = Math.round(val * 100);
-                    return (
-                      <div key={key} className="flex items-center gap-3 text-sm">
-                        <span className="w-20 text-muted-foreground text-xs">{label}</span>
-                        <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-500"
-                            style={{
-                              width: `${pct}%`,
-                              backgroundColor: pct >= 80 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444",
-                            }}
-                          />
+                <div className="space-y-2">
+                  <p className="font-medium text-muted-foreground text-xs uppercase tracking-wider">Breakdown</p>
+                  <div className="space-y-2">
+                    {Object.entries(SCORE_LABELS).map(([key, label]) => {
+                      const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
+                      const pct = Math.round(val * 100);
+                      return (
+                        <div key={key} className="flex items-center gap-3 text-sm">
+                          <span className="w-24 text-muted-foreground text-xs">{label}</span>
+                          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{
+                                width: `${pct}%`,
+                                backgroundColor: pct >= 80 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444",
+                              }}
+                            />
+                          </div>
+                          <span className="w-8 text-right tabular-nums text-xs font-medium">{pct}</span>
                         </div>
-                        <span className="w-8 text-right tabular-nums text-xs font-medium">{pct}</span>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -319,9 +431,7 @@ export function AccessDashboard() {
           {/* Turn-by-turn directions */}
           <Card className="flex flex-col overflow-hidden max-h-[300px]">
             <CardHeader className="pb-3 pt-4 shrink-0 shadow-[0_1px_0_0_var(--border)] z-10">
-              <CardTitle className="font-semibold text-base">
-                Directions
-              </CardTitle>
+              <CardTitle className="font-semibold text-base">Directions</CardTitle>
             </CardHeader>
             <CardContent className="overflow-y-auto p-0 z-0">
               {loading && <div className="p-4 text-sm text-muted-foreground animate-pulse">Computing route…</div>}
@@ -329,8 +439,8 @@ export function AccessDashboard() {
               {routeData && !loading && routeData.directions && (
                 <ul className="divide-y divide-border">
                   {routeData.directions.map((step) => (
-                    <li key={step.step} className="p-4 py-3 flex gap-4 hover:bg-muted/50 transition-colors">
-                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold font-mono border border-primary/20">
+                    <li key={step.step} className="p-4 py-3 flex gap-4 hover:bg-muted/40 transition-colors">
+                      <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold font-mono border border-primary/25">
                         {step.step}
                       </div>
                       <div className="flex-1 space-y-1">
@@ -354,20 +464,106 @@ export function AccessDashboard() {
           </div>
         </aside>
 
-        <section className="relative flex min-h-[min(560px,calc(100vh-340px))] flex-1 flex-col gap-0 bg-[#faf8fc] p-4 md:p-6 lg:overflow-hidden lg:p-8 dark:bg-background/95">
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-end px-4 pt-6 md:px-8">
-            <div className="pointer-events-auto rounded-2xl border border-border/65 bg-background/78 p-3.5 shadow-[0_20px_52px_-32px_rgba(15,24,71,0.42)] backdrop-blur-xl dark:bg-background/72 dark:shadow-black/65">
+        <section className="relative flex min-h-[min(640px,calc(100vh-180px))] flex-1 flex-col gap-0 bg-background p-4 md:p-6 lg:overflow-hidden lg:p-8">
+          {/* Smart action toolbar — top of the map */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex flex-wrap items-start justify-between gap-3 px-4 pt-6 md:px-8">
+            <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-border bg-card p-1 shadow-[0_18px_48px_-34px_rgba(0,0,0,0.85)]">
+              <ModePill
+                active={clickMode === "origin"}
+                onClick={() => setClickMode("origin")}
+                icon={<MapPin className="size-3.5" />}
+                label="Set origin"
+                accent="#22c55e"
+              />
+              <ModePill
+                active={clickMode === "dest"}
+                onClick={() => setClickMode("dest")}
+                icon={<Navigation className="size-3.5" />}
+                label="Set destination"
+                accent="#ef4444"
+              />
+              <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
+              <ModePill
+                active={clickMode === "hazard"}
+                onClick={() => (clickMode === "hazard" ? cancelHazard() : enterHazardMode())}
+                icon={<AlertTriangle className="size-3.5" />}
+                label={clickMode === "hazard" ? "Cancel report" : "Report hazard"}
+                accent="#f59e0b"
+                emphasized
+              />
+            </div>
+
+            {/* Layers + properly labeled legend */}
+            <div className="pointer-events-auto w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-border bg-card p-3.5 shadow-[0_18px_48px_-34px_rgba(0,0,0,0.85)]">
               <p className="mb-3 font-semibold font-mono text-muted-foreground text-[10px] uppercase tracking-[0.22em]">
-                Map overlays
+                Layers · Legend
               </p>
-              <div className="grid gap-2.5">
-                <LayerRow checked={layers.route} onCheckedChange={(c) => setLayers((s) => ({ ...s, route: c }))} label="Route trace" description="Computed accessibility path" colorChip="border-primary/85 bg-primary" />
-                <LayerRow checked={layers.heatmap} onCheckedChange={(c) => setLayers((s) => ({ ...s, heatmap: c }))} label="Traffic heatmap" description="Crowd density by area" colorChip="border-red-700 bg-red-400" />
-                <LayerRow checked={layers.obstacles} onCheckedChange={(c) => setLayers((s) => ({ ...s, obstacles: c }))} label="Transit stops" description="Unitrans bus stops" colorChip="border-amber-700 bg-amber-400" />
-                <LayerRow checked={layers.dangerZones} onCheckedChange={(c) => setLayers((s) => ({ ...s, dangerZones: c }))} label="Danger zones" description="High-noise crossings" colorChip="border-red-700 bg-red-400" />
-                <LayerRow checked={layers.accessibilityPoints} onCheckedChange={(c) => setLayers((s) => ({ ...s, accessibilityPoints: c }))} label="Accessibility points" description="Ramps, crossings, tactile paving" colorChip="border-blue-700 bg-blue-400" />
-                <LayerRow checked={layers.hazards} onCheckedChange={(c) => setLayers((s) => ({ ...s, hazards: c }))} label="User hazards" description="Crowdsourced obstacles" colorChip="border-red-700 bg-red-600" />
+              <div className="grid gap-3">
+                <LayerRow
+                  checked={layers.route}
+                  onCheckedChange={(c) => setLayers((s) => ({ ...s, route: c }))}
+                  label="Route"
+                  description="Best accessibility path"
+                  legend={[{ icon: Route, color: "#7c5cff", label: "Recommended path" }]}
+                />
+                <LayerRow
+                  checked={layers.heatmap}
+                  onCheckedChange={(c) => setLayers((s) => ({ ...s, heatmap: c }))}
+                  label="Crowd heatmap"
+                  description="Time of day × campus hubs"
+                  legend={[
+                    { icon: Users, color: "#22c55e", label: "Calm" },
+                    { icon: Users, color: "#facc15", label: "Moderate" },
+                    { icon: Users, color: "#ef4444", label: "Busy" },
+                  ]}
+                />
+                <LayerRow
+                  checked={layers.obstacles}
+                  onCheckedChange={(c) => setLayers((s) => ({ ...s, obstacles: c }))}
+                  label="Transit stops"
+                  description="Unitrans wheelchair flag"
+                  legend={[
+                    { icon: Bus, color: "#10b981", label: "Accessible" },
+                    { icon: Bus, color: "#f59e0b", label: "Limited" },
+                  ]}
+                />
+                <LayerRow
+                  checked={layers.accessibilityPoints}
+                  onCheckedChange={(c) => setLayers((s) => ({ ...s, accessibilityPoints: c }))}
+                  label="Accessibility points"
+                  description="OSM curbs · crossings · tactile"
+                  legend={[
+                    { icon: MoveHorizontal, color: "#3b82f6", label: "Crossing" },
+                    { icon: Accessibility, color: "#10b981", label: "Curb ramp lowered" },
+                    { icon: Accessibility, color: "#ef4444", label: "Curb ramp raised" },
+                    { icon: CircleDot, color: "#8b5cf6", label: "Tactile paving" },
+                  ]}
+                />
+                <LayerRow
+                  checked={layers.hazards}
+                  onCheckedChange={(c) => setLayers((s) => ({ ...s, hazards: c }))}
+                  label="User hazards"
+                  description="Reports from Supabase"
+                  legend={[{ icon: AlertTriangle, color: "#ef4444", label: "Active hazard" }]}
+                />
               </div>
+            </div>
+          </div>
+
+          {/* Mode hint pill — bottom center */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center px-4">
+            <div
+              className={`pointer-events-auto rounded-full border px-4 py-1.5 text-xs font-medium shadow-[0_18px_48px_-34px_rgba(0,0,0,0.85)] ${
+                clickMode === "hazard"
+                  ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+                  : "border-border bg-card text-muted-foreground"
+              }`}
+            >
+              {clickMode === "hazard"
+                ? draftHazardLatLon
+                  ? "Fill out the form on the map · click another spot to move the pin"
+                  : "Click anywhere on the map to drop a hazard pin"
+                : `Click the map to set ${clickMode === "origin" ? "origin" : "destination"}`}
             </div>
           </div>
 
@@ -379,126 +575,23 @@ export function AccessDashboard() {
             accessibilityPoints={accessibilityPoints}
             hazards={activeHazards}
             draftHazardLatLon={draftHazardLatLon}
+            draftHazardPopup={hazardFormPopup}
+            onDraftHazardClose={cancelHazard}
             originLatLon={origin}
             destLatLon={destination}
             onMapClick={handleMapClick}
           />
-
-          <div className="mt-4 rounded-2xl border border-border/60 bg-card/92 px-4 py-3.5 backdrop-blur-sm md:px-5 shadow-sm shadow-black/[0.04] dark:bg-card dark:shadow-none">
-            <div className="flex flex-wrap items-center gap-3 md:justify-between">
-              <div className="flex flex-wrap gap-2">
-                <LegendSwatch chip="border-primary/85 bg-primary" label="Route" />
-                <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Calm" />
-                <LegendSwatch chip="border-amber-600 bg-amber-400/90" label="Moderate" />
-                <LegendSwatch chip="border-red-600 bg-red-500/65" label="Busy" />
-                <LegendSwatch chip="border-blue-600 bg-blue-500/65" label="Crossing" />
-                <LegendSwatch chip="border-purple-600 bg-purple-500/65" label="Tactile" />
-                <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Ramp" />
-              </div>
-              <div className="flex flex-col items-end gap-2 text-right">
-                <Button 
-                  variant={clickMode === "hazard" ? "destructive" : "secondary"} 
-                  size="sm" 
-                  onClick={() => setClickMode(clickMode === "hazard" ? "origin" : "hazard")}
-                >
-                  {clickMode === "hazard" ? "Cancel Hazard Report" : "Report Hazard ⚠️"}
-                </Button>
-                <p className="text-muted-foreground text-xs md:text-sm font-medium">
-                  {clickMode === "hazard" 
-                    ? "Click the map to drop a hazard pin" 
-                    : `Click map to set ${clickMode === "origin" ? "origin" : "destination"}`
-                  }
-                </p>
-              </div>
-            </div>
-            
-            {/* Hazard Submission Form */}
-            {draftHazardLatLon && (
-              <div className="mt-4 p-4 border rounded-xl bg-destructive/5 animate-in fade-in slide-in-from-top-2">
-                <h4 className="font-semibold text-sm mb-3">Submit Accessibility Hazard</h4>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label className="text-xs">Hazard Type</Label>
-                    <select 
-                      className="w-full p-2 rounded-md border bg-background text-sm"
-                      value={hazardType}
-                      onChange={(e) => setHazardType(e.target.value)}
-                    >
-                      <option value="construction">Construction / Work Zone</option>
-                      <option value="scooter">Improperly Parked Scooter</option>
-                      <option value="broken_ramp">Broken or Missing Curb Ramp</option>
-                      <option value="surface_damage">Severe Surface Damage</option>
-                      <option value="other">Other Obstruction</option>
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs">Description</Label>
-                    <input 
-                      type="text" 
-                      className="w-full p-2 rounded-md border bg-background text-sm"
-                      placeholder="e.g., Sidewalk completely blocked..."
-                      value={hazardDesc}
-                      onChange={(e) => setHazardDesc(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="mt-4 space-y-2">
-                  <Label className="text-xs">Affects Profiles</Label>
-                  <div className="flex flex-wrap gap-3">
-                    {["wheelchair", "blind", "elderly", "neurodivergent", "temporary_injury"].map(p => (
-                      <label key={p} className="flex items-center gap-2 text-sm cursor-pointer">
-                        <Checkbox 
-                          checked={hazardProfiles.includes(p)} 
-                          onCheckedChange={(c) => {
-                            if (c) setHazardProfiles([...hazardProfiles, p]);
-                            else setHazardProfiles(hazardProfiles.filter(x => x !== p));
-                          }}
-                        />
-                        <span className="capitalize">{p.replace("_", " ")}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setDraftHazardLatLon(null)}>Cancel</Button>
-                  <Button size="sm" disabled={submittingHazard} onClick={async () => {
-                    setSubmittingHazard(true);
-                    try {
-                      await reportHazard({
-                        lat: draftHazardLatLon[0],
-                        lon: draftHazardLatLon[1],
-                        type: hazardType,
-                        description: hazardDesc,
-                        affected_profiles: hazardProfiles,
-                      });
-                      const updated = await fetchHazards();
-                      setActiveHazards(updated);
-                      setDraftHazardLatLon(null);
-                      setClickMode("origin");
-                      setHazardDesc("");
-                    } catch (e) {
-                      console.error(e);
-                    } finally {
-                      setSubmittingHazard(false);
-                    }
-                  }}>
-                    {submittingHazard ? "Submitting..." : "Submit Hazard"}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
         </section>
       </main>
 
-      <section className="border-border/80 border-t bg-white px-4 py-7 dark:border-border md:px-8 dark:bg-background">
+      <section className="border-t border-border/60 bg-background px-4 py-7 md:px-8">
         <div className="mx-auto flex max-w-[1680px] flex-col gap-5 lg:flex-row">
-          <Card className="flex-1 border-dashed shadow-sm shadow-black/[0.03] dark:shadow-black/35">
+          <Card className="flex-1 border-dashed">
             <CardHeader className="pb-2">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                   <CardTitle className="font-semibold text-base">Street image upload</CardTitle>
-                  <CardDescription>Gemini would score curb geometry, tactile strips, glare, pinch points.</CardDescription>
+                  <CardDescription>Gemini scores curb geometry, tactile strips, glare, and pinch points.</CardDescription>
                 </div>
                 <Badge variant="outline" className="gap-1">
                   <Camera className="size-3 opacity-70" aria-hidden /> Multimodal
@@ -508,12 +601,12 @@ export function AccessDashboard() {
             <CardContent className="space-y-4 pb-6">
               {!geminiResult ? (
                 <>
-                  <label className="flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border/65 bg-muted/15 p-6 text-center backdrop-blur-[2px] md:min-h-[220px] hover:bg-muted/30 transition-colors">
+                  <label className="flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border bg-muted/40 p-6 text-center md:min-h-[220px] hover:bg-muted/70 transition-colors">
                     <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} disabled={!consentGeminiTerms || geminiLoading} />
                     {geminiLoading ? (
                       <div className="space-y-3">
                         <Sparkles className="size-9 text-primary animate-pulse mx-auto" aria-hidden />
-                        <p className="font-medium text-base text-primary">Analyzing image with Gemini 2.5 Flash...</p>
+                        <p className="font-medium text-base text-primary">Analyzing image with Gemini 2.5 Flash…</p>
                       </div>
                     ) : (
                       <>
@@ -526,45 +619,45 @@ export function AccessDashboard() {
                       </>
                     )}
                   </label>
-                  {geminiError && <p className="text-sm text-red-500 font-medium">Error: {geminiError}</p>}
+                  {geminiError && <p className="text-sm text-red-400 font-medium">Error: {geminiError}</p>}
                 </>
               ) : (
                 <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                  <div className="flex items-center justify-between gap-4 p-4 rounded-xl border bg-muted/30">
+                  <div className="flex items-center justify-between gap-4 p-4 rounded-xl border border-border bg-muted/40">
                     <div>
-                      <p className="text-sm text-muted-foreground uppercase tracking-wider font-semibold mb-1">Overall Assessment</p>
+                      <p className="text-sm text-muted-foreground uppercase tracking-wider font-semibold mb-1">Overall assessment</p>
                       <div className="flex items-center gap-3">
                         <span className="text-3xl font-bold tracking-tight">{geminiResult.overall_score}/100</span>
                         <Badge variant={geminiResult.wheelchair_accessible ? "default" : "destructive"}>
-                          {geminiResult.wheelchair_accessible ? "Accessible" : "Barriers Detected"}
+                          {geminiResult.wheelchair_accessible ? "Accessible" : "Barriers detected"}
                         </Badge>
                       </div>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => { setGeminiResult(null); setGeminiFile(null); }}>Analyze another</Button>
+                    <Button variant="outline" size="sm" onClick={() => { setGeminiResult(null); setGeminiError(null); }}>Analyze another</Button>
                   </div>
-                  
+
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-lg border p-3">
-                      <p className="text-xs text-muted-foreground uppercase mb-1">Surface Type</p>
+                    <div className="rounded-lg border border-border bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground uppercase mb-1">Surface type</p>
                       <p className="font-medium capitalize">{geminiResult.surface_type}</p>
                     </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-xs text-muted-foreground uppercase mb-1">Estimated Slope</p>
+                    <div className="rounded-lg border border-border bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground uppercase mb-1">Estimated slope</p>
                       <p className="font-medium capitalize">{geminiResult.slope_estimate}</p>
                     </div>
                   </div>
 
                   {geminiResult.hazards.length > 0 && (
                     <div className="space-y-2">
-                      <p className="text-sm font-semibold">Detected Hazards</p>
+                      <p className="text-sm font-semibold">Detected hazards</p>
                       <div className="grid gap-2">
                         {geminiResult.hazards.map((hazard, i) => (
-                          <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-destructive/5">
+                          <div key={i} className="flex items-start gap-3 p-3 rounded-lg border border-border bg-destructive/[0.08]">
                             <Badge variant={hazard.severity === "high" ? "destructive" : "secondary"} className="mt-0.5">
-                              {hazard.severity}
+                              {formatSeverity(hazard.severity)}
                             </Badge>
                             <div>
-                              <p className="font-medium text-sm">{hazard.type}</p>
+                              <p className="text-sm font-medium">{formatHazardType(hazard.type)}</p>
                               <p className="text-sm text-muted-foreground">{hazard.description}</p>
                             </div>
                           </div>
@@ -572,13 +665,13 @@ export function AccessDashboard() {
                       </div>
                     </div>
                   )}
-                  
-                  <div className="p-4 rounded-lg bg-primary/5 border border-primary/10">
+
+                  <div className="p-4 rounded-lg bg-primary/[0.08] border border-primary/15">
                     <p className="text-sm leading-relaxed">{geminiResult.explanation}</p>
                   </div>
                 </div>
               )}
-              <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <Label className="flex cursor-pointer items-start gap-3 text-left text-muted-foreground text-sm">
                   <Checkbox checked={consentGeminiTerms} onCheckedChange={(v) => setConsentGeminiTerms(v === true)} className="mt-1" />
                   <span>
@@ -588,58 +681,10 @@ export function AccessDashboard() {
               </div>
             </CardContent>
           </Card>
-
-          <Card className="w-full lg:max-w-md xl:max-w-lg">
-            <CardHeader className="pb-2">
-              <CardTitle className="font-semibold text-base">Route analysis</CardTitle>
-              <CardDescription>{routeData ? "Live route data" : "Compute a route to see analysis"}</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4 pb-6">
-              {routeData ? (
-                <>
-                  <div className="flex items-center justify-between gap-2 rounded-lg bg-muted px-4 py-3">
-                    <span className="font-semibold text-sm">{routeData.profile_display} route</span>
-                    <Badge className="shrink-0 bg-primary">{overallScore} / 100</Badge>
-                  </div>
-                  <div>
-                    <p className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide">Score breakdown</p>
-                    <ul className="space-y-1.5 text-sm leading-relaxed">
-                      {Object.entries(SCORE_LABELS).map(([key, label]) => {
-                        const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
-                        return (
-                          <li key={key} className="flex gap-2">
-                            <Sparkles className="mt-0.5 size-3.5 shrink-0 opacity-65" aria-hidden />
-                            <span><span className="font-medium">{label}: </span>{Math.round(val * 100)}%</span>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                  <Separator />
-                  <div className="space-y-2">
-                    <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Route explanation</p>
-                    <p className="text-sm leading-relaxed">{routeData.explanation}</p>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Route stats</p>
-                    <ul className="list-disc space-y-1.5 ps-5 text-sm">
-                      <li>Distance: {routeData.distance_m}m</li>
-                      <li>Path nodes: {routeData.path.length}</li>
-                      <li>Profile: {routeData.profile_display}</li>
-                    </ul>
-                  </div>
-                </>
-              ) : (
-                <div className="rounded-lg border border-dashed p-4 text-muted-foreground text-xs leading-relaxed">
-                  Click on the map to set an origin and destination, then a route will be computed and analyzed here.
-                </div>
-              )}
-            </CardContent>
-          </Card>
         </div>
       </section>
 
-      <footer className="border-border/80 border-t bg-white px-4 py-5 font-mono text-muted-foreground text-[11px] backdrop-blur-sm dark:bg-card/40 md:px-8">
+      <footer className="border-t border-border/60 bg-background px-4 py-5 font-mono text-muted-foreground text-[11px] md:px-8">
         <div className="mx-auto flex max-w-[1680px] flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <p>AccessMap AI — Next.js 15 · FastAPI · NetworkX · OSM · Open-Meteo</p>
           <div className="flex flex-wrap gap-2">
@@ -653,30 +698,137 @@ export function AccessDashboard() {
   );
 }
 
-function LegendSwatch({ chip, label }: { chip: string; label: string }) {
+function ModePill({
+  active,
+  onClick,
+  icon,
+  label,
+  accent,
+  emphasized = false,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  accent: string;
+  emphasized?: boolean;
+}) {
   return (
-    <div className="flex items-center gap-2 text-muted-foreground text-xs">
-      <span className={`inline-block size-3 rounded-[3px] border ${chip}`} aria-hidden />
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
+        active
+          ? "shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+          : emphasized
+            ? "text-amber-200 hover:text-amber-100"
+            : "text-muted-foreground hover:text-foreground"
+      }`}
+      style={
+        active
+          ? { backgroundColor: `${accent}26`, color: accent }
+          : undefined
+      }
+    >
+      <span className="flex size-4 items-center justify-center" style={active ? { color: accent } : undefined}>
+        {icon}
+      </span>
       <span>{label}</span>
+    </button>
+  );
+}
+
+function ScoreRing({ value, color }: { value: number; color: string }) {
+  const size = 64;
+  const stroke = 6;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = (Math.max(0, Math.min(100, value)) / 100) * c;
+  return (
+    <div className="relative flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="rgba(255,255,255,0.08)"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          fill="none"
+          strokeDasharray={`${dash} ${c - dash}`}
+          style={{ transition: "stroke-dasharray 600ms ease, stroke 300ms ease" }}
+        />
+      </svg>
     </div>
   );
 }
 
-function LayerRow({ label, description, colorChip, checked, onCheckedChange }: {
-  label: string; description: string; colorChip: string;
-  checked: boolean; onCheckedChange: (next: boolean) => void;
+type LegendIcon = ComponentType<SVGProps<SVGSVGElement>>;
+type LegendEntry = { icon: LegendIcon; color: string; label: string };
+
+function LayerRow({
+  label,
+  description,
+  legend,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  description: string;
+  legend: LegendEntry[];
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
 }) {
   const labelId = useId();
   const descId = useId();
   return (
-    <div className="flex items-center gap-3">
-      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-labelledby={labelId} aria-describedby={descId} />
-      <div className="min-w-0 flex flex-1 items-start gap-2">
-        <span className={`mt-2 inline-block size-2.5 shrink-0 rounded-[2px] border ${colorChip}`} aria-hidden />
-        <span className="min-w-0">
-          <p id={labelId} className="font-medium leading-tight">{label}</p>
+    <div className="flex items-start gap-3">
+      <Switch
+        className="mt-0.5"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-labelledby={labelId}
+        aria-describedby={descId}
+      />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div>
+          <p id={labelId} className="font-medium text-sm leading-tight">{label}</p>
           <p id={descId} className="text-muted-foreground text-[11px] leading-snug">{description}</p>
-        </span>
+        </div>
+        {checked && (
+          <ul className="flex flex-col gap-1 pt-1">
+            {legend.map((entry, i) => {
+              const Icon = entry.icon;
+              return (
+                <li
+                  key={i}
+                  className="flex items-center gap-2 text-[11px] leading-tight text-muted-foreground"
+                >
+                  <span
+                    className="flex size-5 shrink-0 items-center justify-center rounded-full ring-1 ring-inset"
+                    style={{
+                      backgroundColor: `${entry.color}1f`,
+                      color: entry.color,
+                      // ring-inset color via box-shadow trick using ring color
+                    }}
+                    aria-hidden
+                  >
+                    <Icon className="size-3" strokeWidth={2.25} />
+                  </span>
+                  <span className="text-foreground/80">{entry.label}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );

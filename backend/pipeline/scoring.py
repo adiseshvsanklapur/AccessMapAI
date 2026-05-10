@@ -16,6 +16,38 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Crowd Density Estimation
 # ---------------------------------------------------------------------------
+
+# Curated UC Davis crowd hubs. Building density alone underestimates these
+# because they sit in plazas / quads with relatively few neighbouring buildings,
+# yet they're the busiest gathering points on campus.
+# (lat, lon, intensity 0..1, decay radius in degrees ≈ 111 km/deg)
+CAMPUS_HOTSPOTS: list[dict] = [
+    {"name": "Memorial Union",                     "lat": 38.5418, "lon": -121.7494, "intensity": 1.00, "radius_deg": 0.0010},
+    {"name": "Activities and Recreation Center",   "lat": 38.5418, "lon": -121.7592, "intensity": 0.95, "radius_deg": 0.0010},
+    {"name": "Silo (Student Community Center)",    "lat": 38.5391, "lon": -121.7519, "intensity": 0.90, "radius_deg": 0.0009},
+    {"name": "Shields Library",                    "lat": 38.5396, "lon": -121.7491, "intensity": 0.85, "radius_deg": 0.0009},
+    {"name": "Wellman Hall / Quad",                "lat": 38.5408, "lon": -121.7493, "intensity": 0.80, "radius_deg": 0.0009},
+    {"name": "Mondavi Center",                     "lat": 38.5388, "lon": -121.7541, "intensity": 0.65, "radius_deg": 0.0008},
+]
+
+
+def hotspot_intensity(lat: float, lon: float) -> float:
+    """
+    Returns 0..1 representing how close `(lat, lon)` is to any curated hotspot,
+    using linear falloff to the configured radius. Multiple hotspots take max.
+    """
+    best = 0.0
+    for hot in CAMPUS_HOTSPOTS:
+        dlat = lat - hot["lat"]
+        dlon = lon - hot["lon"]
+        dist = math.sqrt(dlat * dlat + dlon * dlon)
+        r = hot["radius_deg"]
+        if dist < r:
+            falloff = 1.0 - (dist / r)
+            best = max(best, hot["intensity"] * falloff)
+    return best
+
+
 def crowd_score_time(hour: int, is_weekday: bool) -> float:
     """Returns crowd density score 0.0-1.0 based on time of day."""
     if not is_weekday:
@@ -349,9 +381,16 @@ def enrich_graph_with_scores(
         mid_lat = (lat_u + lat_v) / 2
         mid_lon = (lon_u + lon_v) / 2
 
-        # Crowd score (time + building density)
+        # Crowd score: time-of-day baseline, modulated by both nearby building
+        # density AND distance to curated campus hubs (MU, ARC, Silo, …).
+        # Hotspot proximity dominates so plazas/quads light up red even when
+        # building density is moderate.
         bldg_density = compute_building_density(mid_lat, mid_lon, building_tree)
-        data["crowd_score"] = 0.6 * time_crowd + 0.4 * bldg_density
+        hot = hotspot_intensity(mid_lat, mid_lon)
+        data["crowd_score"] = min(
+            1.0,
+            0.40 * time_crowd + 0.20 * bldg_density + 0.55 * hot,
+        )
 
         # Noise score
         noise_db = estimate_noise_at_point(

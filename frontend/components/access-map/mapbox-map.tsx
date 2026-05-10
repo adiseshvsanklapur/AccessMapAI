@@ -12,9 +12,13 @@ import Map, {
   Layer,
   Marker,
   NavigationControl,
+  Popup,
   Source,
 } from "react-map-gl/mapbox";
 import type { MapMouseEvent, MapRef } from "react-map-gl/mapbox";
+
+import { formatAffectedProfilesList, formatHazardType } from "@/lib/hazard-labels";
+
 import type { AccessibilityMapProps } from "./types";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!;
@@ -53,18 +57,26 @@ function useDocumentDarkClass() {
   return dark;
 }
 
-export function AccessibilityLeafletMap({
+export function AccessibilityMapboxMap({
   layers,
   routeGeoJSON,
   heatmapPoints,
   transitStops,
   accessibilityPoints,
+  hazards,
+  draftHazardLatLon,
+  draftHazardPopup,
+  onDraftHazardClose,
   originLatLon,
   destLatLon,
   onMapClick,
 }: AccessibilityMapProps) {
   const isDark = useDocumentDarkClass();
   const mapRef = useRef<MapRef>(null);
+  const [hoverHazardId, setHoverHazardId] = useState<string | null>(null);
+  const [styleUrl, setStyleUrl] = useState<string>(() =>
+    "mapbox://styles/mapbox/standard"
+  );
 
   const [viewState, setViewState] = useState({
     ...UC_DAVIS_CENTER,
@@ -87,6 +99,26 @@ export function AccessibilityLeafletMap({
       { padding: 60, maxZoom: 17, duration: 800 }
     );
   }, [routeGeoJSON]);
+
+  // When a hazard pin is dropped, pan so it sits ~75% down the viewport,
+  // leaving room above for the popup form.
+  useEffect(() => {
+    if (!draftHazardLatLon || !mapRef.current) return;
+    const t = window.setTimeout(() => {
+      const m = mapRef.current;
+      if (!m) return;
+      const containerH = m.getContainer().clientHeight;
+      // Use panBy so we don't fight with the user's current zoom level: project
+      // the pin to a screen point, then pan so it lands at ~75% from the top.
+      const pt = m.project([draftHazardLatLon[1], draftHazardLatLon[0]]);
+      const targetY = containerH * 0.75;
+      const dy = pt.y - targetY; // positive => pin currently below target → pan up
+      if (Math.abs(dy) > 24) {
+        m.panBy([0, dy], { duration: 420 });
+      }
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [draftHazardLatLon]);
 
   const handleClick = useCallback(
     (e: MapMouseEvent) => {
@@ -134,8 +166,7 @@ export function AccessibilityLeafletMap({
         properties: {
           name: stop.stop_name,
           wheelchair: stop.wheelchair_boarding,
-          color:
-            stop.wheelchair_boarding === "1" ? "#10b981" : "#f59e0b",
+          color: stop.wheelchair_boarding === "1" ? "#10b981" : "#f59e0b",
         },
         geometry: {
           type: "Point" as const,
@@ -164,56 +195,48 @@ export function AccessibilityLeafletMap({
     };
   }, [accessibilityPoints]);
 
-  const mapStyle = isDark
-    ? "mapbox://styles/mapbox/dark-v11"
-    : "mapbox://styles/mapbox/streets-v12";
+  // navigation-night-v1: sleek, minimal-chrome dark style preferred for the app.
+  useEffect(() => {
+    setStyleUrl(
+      isDark
+        ? "mapbox://styles/mapbox/navigation-night-v1"
+        : "mapbox://styles/mapbox/streets-v12"
+    );
+  }, [isDark]);
 
   return (
     <Map
       ref={mapRef}
       {...viewState}
       onMove={(evt) => setViewState(evt.viewState)}
-      mapStyle={mapStyle}
+      mapStyle={styleUrl}
       mapboxAccessToken={MAPBOX_TOKEN}
       onClick={handleClick}
       doubleClickZoom={false}
       style={{ width: "100%", height: "100%", minHeight: "22rem" }}
       reuseMaps
+      onError={() => {
+        // If Mapbox Standard is unavailable, switch to dark-v11.
+        if (styleUrl.includes("/navigation-night")) setStyleUrl("mapbox://styles/mapbox/dark-v11");
+      }}
     >
       <NavigationControl position="top-right" />
 
       {/* Route line */}
       {layers.route && routeSourceData && (
         <Source id="route" type="geojson" data={routeSourceData}>
-          {/* White outline */}
           <Layer
             id="route-outline"
             type="line"
-            paint={{
-              "line-color": "#ffffff",
-              "line-width": 13,
-              "line-opacity": 0.52,
-            }}
-            layout={{
-              "line-cap": "round",
-              "line-join": "round",
-            }}
+            paint={{ "line-color": "#ffffff", "line-width": 13, "line-opacity": 0.52 }}
+            layout={{ "line-cap": "round", "line-join": "round" }}
           />
-          {/* Main route */}
           <Layer
             id="route-main"
             type="line"
-            paint={{
-              "line-color": BRAND,
-              "line-width": 6,
-              "line-opacity": 1,
-            }}
-            layout={{
-              "line-cap": "round",
-              "line-join": "round",
-            }}
+            paint={{ "line-color": BRAND, "line-width": 6, "line-opacity": 1 }}
+            layout={{ "line-cap": "round", "line-join": "round" }}
           />
-          {/* Animated dash */}
           <Layer
             id="route-dash"
             type="line"
@@ -223,9 +246,7 @@ export function AccessibilityLeafletMap({
               "line-opacity": 0.95,
               "line-dasharray": [1, 16],
             }}
-            layout={{
-              "line-cap": "round",
-            }}
+            layout={{ "line-cap": "round" }}
           />
         </Source>
       )}
@@ -236,11 +257,7 @@ export function AccessibilityLeafletMap({
           <Layer
             id="heatmap-circles"
             type="circle"
-            paint={{
-              "circle-radius": 4,
-              "circle-color": ["get", "color"],
-              "circle-opacity": 0.7,
-            }}
+            paint={{ "circle-radius": 4, "circle-color": ["get", "color"], "circle-opacity": 0.7 }}
           />
         </Source>
       )}
@@ -264,11 +281,7 @@ export function AccessibilityLeafletMap({
 
       {/* Accessibility infrastructure points */}
       {layers.accessibilityPoints && accessibilitySourceData && (
-        <Source
-          id="accessibility-pts"
-          type="geojson"
-          data={accessibilitySourceData}
-        >
+        <Source id="accessibility-pts" type="geojson" data={accessibilitySourceData}>
           <Layer
             id="accessibility-circles"
             type="circle"
@@ -316,6 +329,92 @@ export function AccessibilityLeafletMap({
           />
         </Marker>
       )}
+
+      {/* Hazards layer */}
+      {layers.hazards && hazards && hazards.length > 0 && (
+        <>
+          {hazards.map((hazard) => {
+            const active = hoverHazardId === hazard.id;
+            return (
+              <Marker key={hazard.id} latitude={hazard.lat} longitude={hazard.lon} anchor="bottom">
+                <div
+                  className="grid size-4 place-content-center rounded-full border-2 border-white bg-red-500"
+                  style={{
+                    boxShadow:
+                      "0 10px 26px rgba(239,68,68,0.18), 0 1px 2px rgba(0,0,0,0.18)",
+                  }}
+                  title={formatHazardType(hazard.type)}
+                  role="img"
+                  aria-label={formatHazardType(hazard.type)}
+                  onMouseEnter={() => setHoverHazardId(hazard.id)}
+                  onMouseLeave={() => setHoverHazardId((cur) => (cur === hazard.id ? null : cur))}
+                />
+                {active ? (
+                  <Popup
+                    latitude={hazard.lat}
+                    longitude={hazard.lon}
+                    anchor="top"
+                    closeButton={false}
+                    closeOnClick={false}
+                    onClose={() => setHoverHazardId(null)}
+                    offset={14}
+                    className="[&_.mapboxgl-popup-content]:rounded-xl [&_.mapboxgl-popup-content]:border [&_.mapboxgl-popup-content]:border-border/70 [&_.mapboxgl-popup-content]:bg-background/95 [&_.mapboxgl-popup-content]:p-3 [&_.mapboxgl-popup-content]:shadow-[0_16px_40px_-28px_rgba(0,0,0,0.45)]"
+                  >
+                    <div className="flex max-w-[240px] flex-col gap-1">
+                      <div className="text-xs font-semibold leading-snug text-foreground">
+                        {formatHazardType(hazard.type)}
+                      </div>
+                      {hazard.description ? (
+                        <div className="whitespace-normal text-[11px] leading-snug text-muted-foreground">
+                          {hazard.description}
+                        </div>
+                      ) : null}
+                      <div className="text-[11px] leading-snug text-destructive">
+                        <span className="font-medium text-foreground/80">Affects: </span>
+                        {formatAffectedProfilesList(hazard.affected_profiles)}
+                      </div>
+                    </div>
+                  </Popup>
+                ) : null}
+              </Marker>
+            );
+          })}
+        </>
+      )}
+
+      {/* Draft hazard marker + form popup anchored to the dropped pin */}
+      {draftHazardLatLon && (
+        <>
+          <Marker latitude={draftHazardLatLon[0]} longitude={draftHazardLatLon[1]} anchor="bottom">
+            <div
+              className="grid size-5 place-content-center rounded-full border-2 border-white bg-amber-500"
+              style={{
+                boxShadow:
+                  "0 12px 30px rgba(245,158,11,0.30), 0 1px 2px rgba(0,0,0,0.25)",
+              }}
+              title="New hazard"
+              aria-label="New hazard"
+              role="img"
+            />
+          </Marker>
+          {draftHazardPopup && (
+            <Popup
+              latitude={draftHazardLatLon[0]}
+              longitude={draftHazardLatLon[1]}
+              anchor="bottom"
+              offset={28}
+              closeButton={false}
+              closeOnClick={false}
+              onClose={onDraftHazardClose}
+              maxWidth="none"
+              className="z-50 [&_.mapboxgl-popup-content]:overflow-visible [&_.mapboxgl-popup-content]:rounded-2xl [&_.mapboxgl-popup-content]:border [&_.mapboxgl-popup-content]:border-amber-500/30 [&_.mapboxgl-popup-content]:bg-card [&_.mapboxgl-popup-content]:p-0 [&_.mapboxgl-popup-content]:shadow-[0_24px_60px_-24px_rgba(0,0,0,0.85)] [&_.mapboxgl-popup-tip]:!border-t-card"
+            >
+              {draftHazardPopup}
+            </Popup>
+          )}
+        </>
+      )}
     </Map>
   );
 }
+

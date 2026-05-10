@@ -50,85 +50,126 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Dark-first tokens (we set <html class="dark"> by default).
+   Surfaces are SOLID dark tones — not translucent — so cards/popovers don't
+   pick up the body gradient and read as light. */
 :root {
-  --brand: #5c32a8;
-  --background: #ffffff;
-  --foreground: #171224;
-  --card: #ffffff;
-  --card-foreground: #171224;
-  --popover: #ffffff;
-  --popover-foreground: #171224;
+  --brand: #7c5cff;
+  --background: #08070d;
+  --foreground: #f4f2ff;
+  --card: #131120;
+  --card-foreground: #f4f2ff;
+  --popover: #161325;
+  --popover-foreground: #f4f2ff;
   --primary: var(--brand);
   --primary-foreground: #ffffff;
-  --secondary: #f6f3fc;
-  --secondary-foreground: #251747;
-  --muted: #f1ecf9;
-  --muted-foreground: #696384;
-  --accent: #ebe4f7;
-  --accent-foreground: #251747;
-  --destructive: oklch(0.58 0.22 27);
-  --border: #e5dcf2;
-  --input: #e5dcf2;
-  --ring: var(--brand);
-  --chart-1: #5c32a8;
-  --chart-2: #8b5cf6;
-  --chart-3: #c4b5fd;
-  --chart-4: #94a3b8;
-  --chart-5: #ddd6fe;
-  --radius: 0.875rem;
-  --sidebar: #fcfbff;
-  --sidebar-foreground: #171224;
+  --secondary: #1a1828;
+  --secondary-foreground: #f4f2ff;
+  --muted: #181626;
+  --muted-foreground: rgba(244, 242, 255, 0.62);
+  --accent: rgba(124, 92, 255, 0.18);
+  --accent-foreground: #f4f2ff;
+  --destructive: #ef4444;
+  --border: rgba(255, 255, 255, 0.07);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: rgba(124, 92, 255, 0.55);
+  --chart-1: #7c5cff;
+  --chart-2: #22c55e;
+  --chart-3: #f59e0b;
+  --chart-4: #60a5fa;
+  --chart-5: #f472b6;
+  --radius: 1rem;
+  --sidebar: #0d0c15;
+  --sidebar-foreground: #f4f2ff;
   --sidebar-primary: var(--brand);
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #ebe4f7;
-  --sidebar-accent-foreground: #251747;
-  --sidebar-border: #e5dcf2;
-  --sidebar-ring: var(--brand);
+  --sidebar-accent: rgba(124, 92, 255, 0.16);
+  --sidebar-accent-foreground: #f4f2ff;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+  --sidebar-ring: rgba(124, 92, 255, 0.55);
 }
 
-.dark {
-  --brand: #5c32a8;
-  --background: #111018;
-  --foreground: #f5f3f9;
-  --card: #1a1724;
-  --card-foreground: #f5f3f9;
-  --popover: #1a1724;
-  --popover-foreground: #f5f3f9;
-  --primary: var(--brand);
-  --primary-foreground: #ffffff;
-  --secondary: #242030;
-  --secondary-foreground: #ebe4f7;
-  --muted: #242030;
-  --muted-foreground: #a89fc4;
-  --accent: #2d2740;
-  --accent-foreground: #f5f3f9;
-  --destructive: oklch(0.66 0.2 23);
-  --border: rgba(255, 255, 255, 0.1);
-  --input: rgba(255, 255, 255, 0.12);
-  --ring: var(--brand);
-  --chart-1: #9d6ee0;
-  --chart-2: #c4b5fd;
-  --chart-3: #8b5cf6;
-  --chart-4: #94a3b8;
-  --chart-5: #ddd6fe;
-  --sidebar: #16131f;
-  --sidebar-foreground: #f5f3f9;
-  --sidebar-primary: var(--brand);
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #242030;
-  --sidebar-accent-foreground: #f5f3f9;
-  --sidebar-border: rgba(255, 255, 255, 0.09);
-  --sidebar-ring: var(--brand);
-}
+/* `.dark` is intentionally NOT redeclared — :root already holds dark tokens.
+   Re-declaring `--x: var(--x)` produces a circular reference and unsets the
+   token, which made every shadcn surface fall back to transparent. */
+.dark { color-scheme: dark; }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground selection:bg-[#5c32a8]/20 selection:text-foreground;
+    @apply bg-background text-foreground selection:bg-primary/25 selection:text-foreground;
   }
   html {
     @apply font-sans scroll-smooth [font-feature-settings:"cv05","cv11"];
   }
+}
+
+@layer base {
+  body {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(900px 420px at 14% -10%, rgba(124, 92, 255, 0.06), transparent 60%),
+      radial-gradient(700px 360px at 92% 4%, rgba(96, 165, 250, 0.035), transparent 60%);
+  }
+}
+
+/* ----------------------------------------------------------------------
+   Mapbox popup theming.
+   `mapbox-gl.css` ships unlayered and loads after globals.css (lazy chunk),
+   so we win on specificity using a compound selector — not on layer order.
+   ---------------------------------------------------------------------- */
+.mapboxgl-popup .mapboxgl-popup-content {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 0;
+  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.85);
+  overflow: visible;
+}
+
+.mapboxgl-popup.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip {
+  border-top-color: var(--card);
+}
+.mapboxgl-popup.mapboxgl-popup-anchor-top .mapboxgl-popup-tip {
+  border-bottom-color: var(--card);
+}
+.mapboxgl-popup.mapboxgl-popup-anchor-left .mapboxgl-popup-tip {
+  border-right-color: var(--card);
+}
+.mapboxgl-popup.mapboxgl-popup-anchor-right .mapboxgl-popup-tip {
+  border-left-color: var(--card);
+}
+.mapboxgl-popup.mapboxgl-popup-anchor-bottom-left .mapboxgl-popup-tip,
+.mapboxgl-popup.mapboxgl-popup-anchor-bottom-right .mapboxgl-popup-tip {
+  border-top-color: var(--card);
+}
+.mapboxgl-popup.mapboxgl-popup-anchor-top-left .mapboxgl-popup-tip,
+.mapboxgl-popup.mapboxgl-popup-anchor-top-right .mapboxgl-popup-tip {
+  border-bottom-color: var(--card);
+}
+
+.mapboxgl-popup-close-button {
+  color: var(--muted-foreground);
+  font-size: 16px;
+  padding: 4px 8px;
+}
+.mapboxgl-popup-close-button:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+/* Mapbox attribution / nav controls — match dark UI */
+.mapboxgl-ctrl-group {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+}
+.mapboxgl-ctrl-group button + button {
+  border-top: 1px solid var(--border) !important;
+}
+.mapboxgl-ctrl-attrib.mapboxgl-compact {
+  background: rgba(20, 18, 32, 0.85) !important;
+  color: var(--muted-foreground) !important;
 }

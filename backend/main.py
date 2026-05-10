@@ -5,10 +5,17 @@ Serves accessibility-aware routing, heatmap data, and image analysis endpoints.
 Runs the data pipeline at startup to build the enriched pedestrian graph.
 """
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load backend/.env (and do not override vars already set in the shell)
+_backend_dir = Path(__file__).resolve().parent
+load_dotenv(_backend_dir / ".env", override=False)
+
 import os
 import json
 from datetime import datetime
-from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
