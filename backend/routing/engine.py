@@ -425,13 +425,70 @@ class RoutingEngine:
             
         profile = get_combined_profile(profile_names)
 
-        # Find nearest graph nodes
+                # Find nearest graph nodes
         origin_node = find_nearest_node(
             self.G, origin_lat, origin_lon, self.node_tree, self.node_ids
         )
         dest_node = find_nearest_node(
             self.G, dest_lat, dest_lon, self.node_tree, self.node_ids
         )
+
+        # If clicked point is far from nearest node, insert temporary nodes
+        # so routes can start/end in open areas (fields, plazas, etc.)
+        temp_nodes = []
+
+        for label, node_var, lat, lon in [
+            ("origin", origin_node, origin_lat, origin_lon),
+            ("dest", dest_node, dest_lat, dest_lon),
+        ]:
+            nd = self.G.nodes[node_var]
+            nlat, nlon = nd.get("lat", 0), nd.get("lon", 0)
+            dlat = (nlat - lat) * 111_000
+            dlon = (nlon - lon) * 111_000 * math.cos(math.radians(lat))
+            snap_dist = math.sqrt(dlat**2 + dlon**2)
+
+            if snap_dist > 30:  # more than 30m away — insert a virtual node
+                temp_id = hash(f"temp_{label}_{lat}_{lon}") % (10**9) + 10**9
+                self.G.add_node(temp_id, lat=lat, lon=lon)
+                temp_nodes.append(temp_id)
+
+                # Connect to nearby real nodes
+                nearby = self.node_tree.query_ball_point([lat, lon], 150 / 111_000)
+                for idx in nearby:
+                    real_node = self.node_ids[idx]
+                    rnd = self.G.nodes[real_node]
+                    rlat, rlon = rnd.get("lat", 0), rnd.get("lon", 0)
+                    d_lat = (rlat - lat) * 111_000
+                    d_lon = (rlon - lon) * 111_000 * math.cos(math.radians(lat))
+                    dist = math.sqrt(d_lat**2 + d_lon**2)
+                    if dist < 150:
+                        self.G.add_edge(temp_id, real_node,
+                            distance_m=round(dist, 1),
+                            surface="grass", surface_score=0.5,
+                            has_stairs=False, is_sidewalk=False,
+                            is_shortcut=True,
+                        )
+
+                if label == "origin":
+                    origin_node = temp_id
+                else:
+                    dest_node = temp_id
+
+        # If both origin and dest are temp nodes, connect them directly
+        if len(temp_nodes) == 2:
+            n1, n2 = temp_nodes
+            nd1 = self.G.nodes[n1]
+            nd2 = self.G.nodes[n2]
+            dlat = (nd1["lat"] - nd2["lat"]) * 111_000
+            dlon = (nd1["lon"] - nd2["lon"]) * 111_000 * math.cos(math.radians(nd1["lat"]))
+            dist = math.sqrt(dlat**2 + dlon**2)
+            if dist < 500:  # within 500m, allow direct walk
+                self.G.add_edge(n1, n2,
+                    distance_m=round(dist, 1),
+                    surface="grass", surface_score=0.5,
+                    has_stairs=False, is_sidewalk=False,
+                    is_shortcut=True,
+                )
 
         if origin_node is None or dest_node is None:
             return {"error": "Could not find graph nodes near the given coordinates"}
@@ -504,6 +561,10 @@ class RoutingEngine:
 
         explanation = _generate_explanation(path_edges, profile)
         directions = _generate_directions(path_coords, path_edges)
+
+        # Clean up temporary nodes
+        for tn in temp_nodes:
+            self.G.remove_node(tn)
 
         return {
             "origin": {"lat": origin_lat, "lon": origin_lon},
