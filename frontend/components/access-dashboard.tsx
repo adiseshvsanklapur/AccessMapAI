@@ -2,42 +2,50 @@
 
 import {
   Accessibility, AlertTriangle, Bus, Camera, CircleDot, Ear, Flag, Footprints,
-  Info, MapPin, MapPinned, MoveHorizontal, Moon, Navigation, Route, Sparkles,
-  Upload, UserRound, Users, X,
+  Info, LogIn, MapPin, MapPinned, Moon, MoveHorizontal, Navigation, Route,
+  Sparkles, Upload, User, UserPlus, UserRound, Users, X,
 } from "lucide-react";
+import Link from "next/link";
 import type { ComponentType, SVGProps } from "react";
 import { useCallback, useEffect, useId, useState } from "react";
 
+import { useAuth } from "@/components/auth-provider";
 import { MapView } from "@/components/access-map/map-view";
 import type { MapLayerToggle } from "@/components/access-map/types";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { ACCESS_PROFILE_OPTIONS } from "@/lib/access-profiles";
 import {
   fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
   fetchHazards, reportHazard,
   type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
   type HazardReport,
 } from "@/lib/api";
+import type { RoutingProfileId } from "@/lib/profile-types";
+import { cn } from "@/lib/utils";
 import { formatAffectedProfile, formatHazardType, formatSeverity } from "@/lib/hazard-labels";
 
-const PROFILES = [
-  { value: "wheelchair", title: "Wheelchair", description: "Ramps & slope constraints", icon: Accessibility },
-  { value: "blind", title: "Blind / low vision", description: "Tactile cues & crossings", icon: Moon },
-  { value: "elderly", title: "Elderly", description: "Rest stops & glare", icon: Footprints },
-  { value: "neurodivergent", title: "Neurodivergent", description: "Noise & sensory load", icon: Ear },
-  { value: "temporary_injury", title: "Temporary injury", description: "Shorter distances", icon: UserRound },
-] as const;
+const PROFILE_ICONS: Record<
+  RoutingProfileId,
+  ComponentType<{ className?: string; "aria-hidden"?: boolean }>
+> = {
+  wheelchair: Accessibility,
+  blind: Moon,
+  elderly: Footprints,
+  neurodivergent: Ear,
+  temporary_injury: UserRound,
+};
 
 const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, accessibilityPoints: true, hazards: true };
 
-// Default locations: Memorial Union → Shields Library
-const DEFAULT_ORIGIN: [number, number] = [38.5422, -121.7494];
-const DEFAULT_DEST: [number, number] = [38.5396, -121.7490];
+// Start empty: user picks origin/destination explicitly.
+const DEFAULT_ORIGIN: [number, number] | null = null;
+const DEFAULT_DEST: [number, number] | null = null;
 
 const SCORE_LABELS: Record<string, string> = {
   slope: "Slope", surface: "Surface", noise: "Noise", crowd: "Crowd",
@@ -49,7 +57,16 @@ type ClickMode = "origin" | "dest" | "hazard";
 
 export function AccessDashboard() {
   const scoringId = useId();
-  const [selectedProfiles, setSelectedProfiles] = useState<string[]>(["wheelchair"]);
+  const {
+    configured: supabaseReady,
+    ready: authReady,
+    user,
+    profile: accountProfile,
+    signingOut,
+    signOut,
+  } = useAuth();
+  const [selectedProfiles, setSelectedProfiles] = useState<string[]>([]);
+  const [syncedRoutingFromAccount, setSyncedRoutingFromAccount] = useState(false);
   const [layers, setLayers] = useState<MapLayerToggle>(defaultLayers);
   const [consentGeminiTerms, setConsentGeminiTerms] = useState(true);
 
@@ -62,6 +79,7 @@ export function AccessDashboard() {
   const [accessibilityPoints, setAccessibilityPoints] = useState<AccessibilityPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [backendReady, setBackendReady] = useState(false);
   const [clickMode, setClickMode] = useState<ClickMode>("origin");
 
   // Hazard reporting state
@@ -77,15 +95,40 @@ export function AccessDashboard() {
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!authReady || !supabaseReady || !accountProfile?.onboarding_completed) return;
+    if (syncedRoutingFromAccount) return;
+    const savedProfiles = accountProfile.routing_profiles?.length
+      ? accountProfile.routing_profiles
+      : [accountProfile.routing_profile];
+    setSelectedProfiles(savedProfiles);
+    setSyncedRoutingFromAccount(true);
+  }, [authReady, supabaseReady, accountProfile, syncedRoutingFromAccount]);
+
+  useEffect(() => {
+    if (!user) setSyncedRoutingFromAccount(false);
+  }, [user]);
+
   // Fetch route when origin, destination, or profile changes
   useEffect(() => {
     if (!origin || !destination) return;
+    if (selectedProfiles.length === 0) {
+      setRouteData(null);
+      setLoading(false);
+      setError("Select at least one disability profile to compute a route.");
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
 
     fetchRoute(origin[0], origin[1], destination[0], destination[1], selectedProfiles)
-      .then((data) => { if (!cancelled) { setRouteData(data); } })
+      .then((data) => {
+        if (!cancelled) {
+          setRouteData(data);
+          setBackendReady(true);
+        }
+      })
       .catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
@@ -95,16 +138,28 @@ export function AccessDashboard() {
   // Fetch heatmap & transit on mount
   useEffect(() => {
     fetchHeatmap("crowd_score")
-      .then((r) => setHeatmapPoints(r.points))
+      .then((r) => {
+        setHeatmapPoints(r.points);
+        setBackendReady(true);
+      })
       .catch(() => {});
     fetchTransit()
-      .then((r) => setTransitStops(r.stops))
+      .then((r) => {
+        setTransitStops(r.stops);
+        setBackendReady(true);
+      })
       .catch(() => {});
     fetchAccessibilityPoints()
-      .then(setAccessibilityPoints)
+      .then((points) => {
+        setAccessibilityPoints(points);
+        setBackendReady(true);
+      })
       .catch(() => {});
     fetchHazards()
-      .then(setActiveHazards)
+      .then((hazards) => {
+        setActiveHazards(hazards);
+        setBackendReady(true);
+      })
       .catch(() => {});
   }, []);
 
@@ -286,7 +341,63 @@ export function AccessDashboard() {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 md:justify-end" />
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            {/* Do not gate on authReady — if it never flips true, auth links disappeared entirely */}
+            {user ? (
+              <>
+                <Link
+                  href="/profile"
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <User className="size-3.5 opacity-80" aria-hidden />
+                  Profile
+                </Link>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8"
+                  type="button"
+                  disabled={signingOut}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    signOut();
+                  }}
+                >
+                  {signingOut ? "Signing out…" : "Sign out"}
+                </Button>
+              </>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Link
+                  href="/login"
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <LogIn className="size-3.5 opacity-90" aria-hidden />
+                  Sign in
+                </Link>
+                <Link
+                  href="/signup"
+                  className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <UserPlus className="size-3.5 opacity-90" aria-hidden />
+                  Sign up
+                </Link>
+              </div>
+            )}
+            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
+              <Sparkles className="size-3.5 opacity-70" aria-hidden />
+              Gemini storyboard
+            </Badge>
+            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
+              OSM tiles
+            </Badge>
+            {backendReady && (
+              <Badge className="gap-1.5 rounded-full bg-emerald-500/90 px-3 py-0.5 font-medium text-white">
+                Backend connected
+              </Badge>
+            )}
+          </div>
         </div>
       </header>
 
@@ -296,11 +407,26 @@ export function AccessDashboard() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="font-semibold text-base">Disability profile</CardTitle>
-              <CardDescription>Select a profile to remap routing weights.</CardDescription>
+              <CardDescription className="space-y-1">
+                <span>Select a profile to remap routing weights.</span>
+                {!user && (
+                  <span className="block text-[0.8125rem] leading-snug">
+                    <Link href="/signup" className="font-medium text-primary underline-offset-4 hover:underline">
+                      Sign up
+                    </Link>
+                    {" · "}
+                    <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
+                      Sign in
+                    </Link>
+                    <span className="text-muted-foreground"> to save your preferences.</span>
+                  </span>
+                )}
+              </CardDescription>
             </CardHeader>
             <CardContent className="pt-0">
               <div className="flex flex-col gap-2.5">
-                {PROFILES.map(({ value, title, description, icon: Icon }) => {
+                {ACCESS_PROFILE_OPTIONS.map(({ value, title, description }) => {
+                  const Icon = PROFILE_ICONS[value];
                   const id = `profile-${value}`;
                   const isSelected = selectedProfiles.includes(value);
                   return (
@@ -321,9 +447,7 @@ export function AccessDashboard() {
                           if (checked) {
                             setSelectedProfiles([...selectedProfiles, value]);
                           } else {
-                            if (selectedProfiles.length > 1) {
-                              setSelectedProfiles(selectedProfiles.filter((p) => p !== value));
-                            }
+                            setSelectedProfiles(selectedProfiles.filter((p) => p !== value));
                           }
                         }}
                       />
@@ -338,6 +462,11 @@ export function AccessDashboard() {
                   );
                 })}
               </div>
+              {selectedProfiles.length === 0 && (
+                <p className="mt-2 text-amber-400 text-xs">
+                  Select at least one profile to generate route analysis and directions.
+                </p>
+              )}
               <Separator className="my-4" />
               <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-3.5 font-mono text-muted-foreground text-[11px] leading-relaxed">
                 <span className="flex items-start gap-2 font-medium text-foreground">
@@ -464,7 +593,7 @@ export function AccessDashboard() {
           </div>
         </aside>
 
-        <section className="relative flex min-h-[min(640px,calc(100vh-180px))] flex-1 flex-col gap-0 bg-background p-4 md:p-6 lg:overflow-hidden lg:p-8">
+        <section className="relative flex min-h-[min(560px,calc(100vh-220px))] flex-1 flex-col gap-0 bg-background p-4 md:p-6 lg:overflow-hidden lg:p-8">
           {/* Smart action toolbar — top of the map */}
           <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex flex-wrap items-start justify-between gap-3 px-4 pt-6 md:px-8">
             <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-border bg-card p-1 shadow-[0_18px_48px_-34px_rgba(0,0,0,0.85)]">

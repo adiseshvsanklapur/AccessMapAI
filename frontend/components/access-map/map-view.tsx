@@ -24,7 +24,7 @@ const MapboxImplementation = dynamic(
 
 export function MapView(props: AccessibilityMapProps) {
   return (
-    <div className="group/map relative h-full min-h-[22rem] w-full overflow-hidden rounded-2xl border border-border bg-card shadow-[0_28px_64px_-40px_rgba(0,0,0,0.75)] ring-1 ring-white/[0.04]">
+    <div className="group/map relative h-full min-h-[18rem] w-full overflow-hidden rounded-2xl border border-border bg-card shadow-[0_28px_64px_-40px_rgba(0,0,0,0.75)] ring-1 ring-white/[0.04]">
       <MapboxImplementation {...props} />
     </div>
   );

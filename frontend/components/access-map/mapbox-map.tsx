@@ -7,6 +7,7 @@
  * and supports click-to-set origin/destination.
  */
 import "mapbox-gl/dist/mapbox-gl.css";
+import { Plus, Minus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Map, {
   Layer,
@@ -21,7 +22,7 @@ import { formatAffectedProfilesList, formatHazardType } from "@/lib/hazard-label
 
 import type { AccessibilityMapProps } from "./types";
 
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!;
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const BRAND = "#5c32a8";
 
 /** UC Davis center */
@@ -38,10 +39,33 @@ const CATEGORY_COLORS: Record<string, string> = {
   wheelchair_no: "#ef4444",
 };
 
+type LngLatTuple = [number, number];
+type LatLngTuple = [number, number];
+
 function scoreToColor(value: number): string {
   if (value > 0.66) return `rgba(239, 68, 68, ${0.4 + value * 0.4})`;
   if (value > 0.33) return `rgba(250, 204, 21, ${0.3 + value * 0.4})`;
   return `rgba(34, 197, 94, ${0.3 + value * 0.3})`;
+}
+
+function sanitizeLineCoords(input: unknown): LngLatTuple[] {
+  if (!Array.isArray(input)) return [];
+  return input.filter((item): item is LngLatTuple => {
+    if (!Array.isArray(item) || item.length < 2) return false;
+    const [lon, lat] = item;
+    return typeof lon === "number" && Number.isFinite(lon) && typeof lat === "number" && Number.isFinite(lat);
+  });
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function toValidLatLng(input: unknown): LatLngTuple | null {
+  if (!Array.isArray(input) || input.length < 2) return null;
+  const [lat, lng] = input;
+  if (!isFiniteNumber(lat) || !isFiniteNumber(lng)) return null;
+  return [lat, lng];
 }
 
 function useDocumentDarkClass() {
@@ -71,25 +95,28 @@ export function AccessibilityMapboxMap({
   destLatLon,
   onMapClick,
 }: AccessibilityMapProps) {
+  const hasMapboxToken = Boolean(MAPBOX_TOKEN?.trim());
   const isDark = useDocumentDarkClass();
   const mapRef = useRef<MapRef>(null);
   const [hoverHazardId, setHoverHazardId] = useState<string | null>(null);
-  const [styleUrl, setStyleUrl] = useState<string>(() =>
-    "mapbox://styles/mapbox/standard"
+  const safeOriginLatLon = toValidLatLng(originLatLon);
+  const safeDestLatLon = toValidLatLng(destLatLon);
+  const safeDraftHazardLatLon = toValidLatLng(draftHazardLatLon);
+  const safeHazards = useMemo(
+    () =>
+      (hazards ?? []).filter(
+        (hazard) => isFiniteNumber(hazard.lat) && isFiniteNumber(hazard.lon),
+      ),
+    [hazards],
   );
-
-  const [viewState, setViewState] = useState({
-    ...UC_DAVIS_CENTER,
-    zoom: 15,
-  });
 
   // Fit bounds when route changes
   useEffect(() => {
-    const coords = routeGeoJSON?.geometry?.coordinates;
+    const coords = sanitizeLineCoords(routeGeoJSON?.geometry?.coordinates);
     if (!coords || coords.length < 2 || !mapRef.current) return;
 
-    const lngs = coords.map(([lon]: number[]) => lon);
-    const lats = coords.map(([, lat]: number[]) => lat);
+    const lngs = coords.map(([lon]) => lon);
+    const lats = coords.map(([, lat]) => lat);
 
     mapRef.current.fitBounds(
       [
@@ -103,14 +130,14 @@ export function AccessibilityMapboxMap({
   // When a hazard pin is dropped, pan so it sits ~75% down the viewport,
   // leaving room above for the popup form.
   useEffect(() => {
-    if (!draftHazardLatLon || !mapRef.current) return;
+    if (!safeDraftHazardLatLon || !mapRef.current) return;
     const t = window.setTimeout(() => {
       const m = mapRef.current;
       if (!m) return;
       const containerH = m.getContainer().clientHeight;
       // Use panBy so we don't fight with the user's current zoom level: project
       // the pin to a screen point, then pan so it lands at ~75% from the top.
-      const pt = m.project([draftHazardLatLon[1], draftHazardLatLon[0]]);
+      const pt = m.project([safeDraftHazardLatLon[1], safeDraftHazardLatLon[0]]);
       const targetY = containerH * 0.75;
       const dy = pt.y - targetY; // positive => pin currently below target → pan up
       if (Math.abs(dy) > 24) {
@@ -118,7 +145,7 @@ export function AccessibilityMapboxMap({
       }
     }, 60);
     return () => window.clearTimeout(t);
-  }, [draftHazardLatLon]);
+  }, [safeDraftHazardLatLon]);
 
   const handleClick = useCallback(
     (e: MapMouseEvent) => {
@@ -129,20 +156,27 @@ export function AccessibilityMapboxMap({
 
   // Build route GeoJSON for the Source
   const routeSourceData = useMemo(() => {
-    if (!routeGeoJSON?.geometry?.coordinates) return null;
+    const coords = sanitizeLineCoords(routeGeoJSON?.geometry?.coordinates);
+    if (coords.length < 2) return null;
     return {
       type: "Feature" as const,
       properties: {},
-      geometry: routeGeoJSON.geometry,
+      geometry: {
+        type: "LineString" as const,
+        coordinates: coords,
+      },
     };
   }, [routeGeoJSON]);
 
   // Build heatmap GeoJSON
   const heatmapSourceData = useMemo(() => {
-    if (!heatmapPoints || heatmapPoints.length === 0) return null;
+    const safePoints = (heatmapPoints ?? []).filter(
+      (pt) => isFiniteNumber(pt.lat) && isFiniteNumber(pt.lon) && isFiniteNumber(pt.value),
+    );
+    if (safePoints.length === 0) return null;
     return {
       type: "FeatureCollection" as const,
-      features: heatmapPoints.map((pt) => ({
+      features: safePoints.map((pt) => ({
         type: "Feature" as const,
         properties: {
           value: pt.value,
@@ -158,10 +192,13 @@ export function AccessibilityMapboxMap({
 
   // Build transit stops GeoJSON
   const transitSourceData = useMemo(() => {
-    if (!transitStops || transitStops.length === 0) return null;
+    const safeStops = (transitStops ?? []).filter(
+      (stop) => isFiniteNumber(stop.lat) && isFiniteNumber(stop.lon),
+    );
+    if (safeStops.length === 0) return null;
     return {
       type: "FeatureCollection" as const,
-      features: transitStops.map((stop) => ({
+      features: safeStops.map((stop) => ({
         type: "Feature" as const,
         properties: {
           name: stop.stop_name,
@@ -178,10 +215,13 @@ export function AccessibilityMapboxMap({
 
   // Build accessibility points GeoJSON
   const accessibilitySourceData = useMemo(() => {
-    if (!accessibilityPoints || accessibilityPoints.length === 0) return null;
+    const safePoints = (accessibilityPoints ?? []).filter(
+      (pt) => isFiniteNumber(pt.lat) && isFiniteNumber(pt.lon),
+    );
+    if (safePoints.length === 0) return null;
     return {
       type: "FeatureCollection" as const,
-      features: accessibilityPoints.map((pt) => ({
+      features: safePoints.map((pt) => ({
         type: "Feature" as const,
         properties: {
           label: pt.label,
@@ -195,32 +235,64 @@ export function AccessibilityMapboxMap({
     };
   }, [accessibilityPoints]);
 
-  // navigation-night-v1: sleek, minimal-chrome dark style preferred for the app.
-  useEffect(() => {
-    setStyleUrl(
-      isDark
-        ? "mapbox://styles/mapbox/navigation-night-v1"
-        : "mapbox://styles/mapbox/streets-v12"
+  const styleUrl = isDark
+    ? "mapbox://styles/mapbox/dark-v11"
+    : "mapbox://styles/mapbox/streets-v12";
+
+  if (!hasMapboxToken) {
+    return (
+      <div className="flex h-full min-h-[22rem] w-full flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card p-6 text-center">
+        <p className="font-medium text-foreground text-sm">Mapbox token missing</p>
+        <p className="max-w-md text-muted-foreground text-xs leading-relaxed">
+          Add <code className="rounded bg-muted px-1.5 py-0.5">NEXT_PUBLIC_MAPBOX_TOKEN=...</code> to{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5">frontend/.env.local</code>, then restart{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5">npm run dev</code>.
+        </p>
+      </div>
     );
-  }, [isDark]);
+  }
 
   return (
     <Map
       ref={mapRef}
-      {...viewState}
-      onMove={(evt) => setViewState(evt.viewState)}
+      initialViewState={{ ...UC_DAVIS_CENTER, zoom: 15 }}
       mapStyle={styleUrl}
       mapboxAccessToken={MAPBOX_TOKEN}
       onClick={handleClick}
       doubleClickZoom={false}
+      scrollZoom
+      touchZoomRotate
       style={{ width: "100%", height: "100%", minHeight: "22rem" }}
-      reuseMaps
-      onError={() => {
-        // If Mapbox Standard is unavailable, switch to dark-v11.
-        if (styleUrl.includes("/navigation-night")) setStyleUrl("mapbox://styles/mapbox/dark-v11");
-      }}
     >
       <NavigationControl position="top-right" />
+      <div className="absolute bottom-6 right-4 z-20 flex flex-col gap-2">
+        <button
+          type="button"
+          aria-label="Zoom in"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            mapRef.current?.getMap().zoomIn({ duration: 250 });
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="grid h-9 w-9 place-items-center rounded-md border border-border/70 bg-background/95 text-foreground shadow-md transition hover:bg-muted"
+        >
+          <Plus className="size-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            mapRef.current?.getMap().zoomOut({ duration: 250 });
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="grid h-9 w-9 place-items-center rounded-md border border-border/70 bg-background/95 text-foreground shadow-md transition hover:bg-muted"
+        >
+          <Minus className="size-4" />
+        </button>
+      </div>
 
       {/* Route line */}
       {layers.route && routeSourceData && (
@@ -257,7 +329,7 @@ export function AccessibilityMapboxMap({
           <Layer
             id="heatmap-circles"
             type="circle"
-            paint={{ "circle-radius": 4, "circle-color": ["get", "color"], "circle-opacity": 0.7 }}
+            paint={{ "circle-radius": 2.6, "circle-color": ["get", "color"], "circle-opacity": 0.33 }}
           />
         </Source>
       )}
@@ -297,8 +369,8 @@ export function AccessibilityMapboxMap({
       )}
 
       {/* Origin marker */}
-      {originLatLon && (
-        <Marker latitude={originLatLon[0]} longitude={originLatLon[1]}>
+      {safeOriginLatLon && (
+        <Marker latitude={safeOriginLatLon[0]} longitude={safeOriginLatLon[1]}>
           <div
             style={{
               width: 20,
@@ -314,8 +386,8 @@ export function AccessibilityMapboxMap({
       )}
 
       {/* Destination marker */}
-      {destLatLon && (
-        <Marker latitude={destLatLon[0]} longitude={destLatLon[1]}>
+      {safeDestLatLon && (
+        <Marker latitude={safeDestLatLon[0]} longitude={safeDestLatLon[1]}>
           <div
             style={{
               width: 20,
@@ -331,9 +403,9 @@ export function AccessibilityMapboxMap({
       )}
 
       {/* Hazards layer */}
-      {layers.hazards && hazards && hazards.length > 0 && (
+      {layers.hazards && safeHazards.length > 0 && (
         <>
-          {hazards.map((hazard) => {
+          {safeHazards.map((hazard) => {
             const active = hoverHazardId === hazard.id;
             return (
               <Marker key={hazard.id} latitude={hazard.lat} longitude={hazard.lon} anchor="bottom">
@@ -383,9 +455,9 @@ export function AccessibilityMapboxMap({
       )}
 
       {/* Draft hazard marker + form popup anchored to the dropped pin */}
-      {draftHazardLatLon && (
+      {safeDraftHazardLatLon && (
         <>
-          <Marker latitude={draftHazardLatLon[0]} longitude={draftHazardLatLon[1]} anchor="bottom">
+          <Marker latitude={safeDraftHazardLatLon[0]} longitude={safeDraftHazardLatLon[1]} anchor="bottom">
             <div
               className="grid size-5 place-content-center rounded-full border-2 border-white bg-amber-500"
               style={{
@@ -399,8 +471,8 @@ export function AccessibilityMapboxMap({
           </Marker>
           {draftHazardPopup && (
             <Popup
-              latitude={draftHazardLatLon[0]}
-              longitude={draftHazardLatLon[1]}
+              latitude={safeDraftHazardLatLon[0]}
+              longitude={safeDraftHazardLatLon[1]}
               anchor="bottom"
               offset={28}
               closeButton={false}

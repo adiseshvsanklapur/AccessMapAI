@@ -14,6 +14,16 @@ from typing import Optional
 from .profiles import AccessibilityProfile, get_profile, get_combined_profile
 
 
+def _num(value, default: float) -> float:
+    """Coerce optional numeric values (including None) into safe floats."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Edge cost function
 # ---------------------------------------------------------------------------
@@ -31,7 +41,7 @@ def compute_edge_cost(
     Where penalty_sum is a weighted combination of accessibility factors.
     Higher penalties make the edge less desirable.
     """
-    distance = data.get("distance_m", 1.0)
+    distance = _num(data.get("distance_m"), 1.0)
     if distance <= 0:
         distance = 1.0
 
@@ -47,7 +57,7 @@ def compute_edge_cost(
             return distance * 50  # very high penalty
 
     # Max slope constraint
-    slope = data.get("slope")
+    slope = _num(data.get("slope"), 0.0)
     if profile.max_slope is not None and slope is not None:
         if abs(slope) > profile.max_slope:
             return distance * 20  # high penalty
@@ -62,28 +72,27 @@ def compute_edge_cost(
     penalty = 0.0
 
     # Slope penalty
-    if slope is not None:
-        slope_severity = min(abs(slope) / 15.0, 1.0)
-        penalty += profile.slope_weight * slope_severity
+    slope_severity = min(abs(slope) / 15.0, 1.0)
+    penalty += profile.slope_weight * slope_severity
 
     # Surface penalty (invert: bad surface = high penalty)
-    surface_score = data.get("surface_score", 0.7)
+    surface_score = _num(data.get("surface_score"), 0.7)
     penalty += profile.surface_weight * (1 - surface_score)
 
     # Noise penalty
-    noise_score = data.get("noise_score", 0.5)
+    noise_score = _num(data.get("noise_score"), 0.5)
     penalty += profile.noise_weight * noise_score
 
     # Crowd penalty
-    crowd_score = data.get("crowd_score", 0.5)
+    crowd_score = _num(data.get("crowd_score"), 0.5)
     penalty += profile.crowd_weight * crowd_score
 
     # Lighting penalty (invert: bad lighting = high penalty)
-    lighting_score = data.get("lighting_score", 0.5)
+    lighting_score = _num(data.get("lighting_score"), 0.5)
     penalty += profile.lighting_weight * (1 - lighting_score)
 
     # Kerb penalty (invert: bad kerbs = high penalty)
-    kerb_score = data.get("kerb_score", 0.7)
+    kerb_score = _num(data.get("kerb_score"), 0.7)
     penalty += profile.kerb_weight * (1 - kerb_score)
 
     # Stairs soft penalty (if not avoiding entirely)
@@ -91,11 +100,11 @@ def compute_edge_cost(
         penalty += profile.stairs_penalty
 
     # Crossing signal bonus (negative penalty = lower cost for signalized crossings)
-    crossing_signal = data.get("crossing_signal_score", 0.5)
+    crossing_signal = _num(data.get("crossing_signal_score"), 0.5)
     penalty -= profile.crossing_signal_weight * crossing_signal * 0.3
 
     # Tactile paving bonus (negative penalty = lower cost for tactile paving routes)
-    tactile = data.get("tactile_score", 0.5)
+    tactile = _num(data.get("tactile_score"), 0.5)
     penalty -= profile.tactile_weight * tactile * 0.3
 
     # Explicit sidewalk bonus
@@ -180,17 +189,17 @@ def _generate_explanation(
     """Generate a human-readable explanation of why this route was chosen."""
     reasons = []
     # Analyze path characteristics
-    total_dist = sum(e.get("distance_m", 0) for e in path_edges)
+    total_dist = sum(_num(e.get("distance_m"), 0) for e in path_edges)
     avg_slope = 0
     max_slope = 0
     has_stairs = any(e.get("has_stairs", False) for e in path_edges)
-    avg_surface = np.mean([e.get("surface_score", 0.7) for e in path_edges]) if path_edges else 0.7
-    avg_noise = np.mean([e.get("noise_score", 0.5) for e in path_edges]) if path_edges else 0.5
-    avg_crowd = np.mean([e.get("crowd_score", 0.5) for e in path_edges]) if path_edges else 0.5
-    avg_lighting = np.mean([e.get("lighting_score", 0.5) for e in path_edges]) if path_edges else 0.5
-    max_slope = max([abs(e.get("slope") or 0) for e in path_edges]) if path_edges else 0
-    avg_tactile = np.mean([e.get("tactile_score", 0.5) for e in path_edges]) if path_edges else 0.5
-    avg_crossing = np.mean([e.get("crossing_signal_score", 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_surface = np.mean([_num(e.get("surface_score"), 0.7) for e in path_edges]) if path_edges else 0.7
+    avg_noise = np.mean([_num(e.get("noise_score"), 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_crowd = np.mean([_num(e.get("crowd_score"), 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_lighting = np.mean([_num(e.get("lighting_score"), 0.5) for e in path_edges]) if path_edges else 0.5
+    max_slope = max([abs(_num(e.get("slope"), 0)) for e in path_edges]) if path_edges else 0
+    avg_tactile = np.mean([_num(e.get("tactile_score"), 0.5) for e in path_edges]) if path_edges else 0.5
+    avg_crossing = np.mean([_num(e.get("crossing_signal_score"), 0.5) for e in path_edges]) if path_edges else 0.5
     sidewalk_ratio = sum(1 for e in path_edges if e.get("is_sidewalk")) / len(path_edges) if path_edges else 0
     reasons.append(f"This route is {total_dist:.0f} meters long")
 
@@ -217,14 +226,14 @@ def _generate_explanation(
             reasons.append("avoiding crowded walkways")
 
         # Crossing signal info
-        avg_crossing = sum(e.get("crossing_signal_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
+        avg_crossing = sum(_num(e.get("crossing_signal_score"), 0.5) for e in path_edges) / max(len(path_edges), 1)
         if avg_crossing > 0.7:
             reasons.append("preferring signalized crossings with audio cues")
         elif avg_crossing > 0.5:
             reasons.append("using marked crossings where available")
 
         # Tactile paving info
-        avg_tactile = sum(e.get("tactile_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
+        avg_tactile = sum(_num(e.get("tactile_score"), 0.5) for e in path_edges) / max(len(path_edges), 1)
         if avg_tactile > 0.7:
             reasons.append("along paths with tactile paving guidance")
         elif avg_tactile > 0.5:
@@ -517,21 +526,21 @@ class RoutingEngine:
             edata = dict(self.G.edges[u, v])
             edata["from_node"] = int(u)
             edata["to_node"] = int(v)
-            total_distance += edata.get("distance_m", 0)
+            total_distance += _num(edata.get("distance_m"), 0)
             path_edges.append(edata)
 
         # Compute average scores
         n_edges = max(len(path_edges), 1)
         scores = {
-            "overall": sum(e.get("accessibility_score", 0.5) for e in path_edges) / n_edges,
-            "slope": 1.0 - (sum(min(abs(e.get("slope", 0) or 0) / 15, 1) for e in path_edges) / n_edges),
-            "surface": sum(e.get("surface_score", 0.7) for e in path_edges) / n_edges,
-            "noise": 1.0 - (sum(e.get("noise_score", 0.5) for e in path_edges) / n_edges),
-            "crowd": 1.0 - (sum(e.get("crowd_score", 0.5) for e in path_edges) / n_edges),
-            "lighting": sum(e.get("lighting_score", 0.5) for e in path_edges) / n_edges,
-            "kerb": sum(e.get("kerb_score", 0.7) for e in path_edges) / n_edges,
-            "crossing_signals": sum(e.get("crossing_signal_score", 0.5) for e in path_edges) / n_edges,
-            "tactile": sum(e.get("tactile_score", 0.5) for e in path_edges) / n_edges,
+            "overall": sum(_num(e.get("accessibility_score"), 0.5) for e in path_edges) / n_edges,
+            "slope": 1.0 - (sum(min(abs(_num(e.get("slope"), 0)) / 15, 1) for e in path_edges) / n_edges),
+            "surface": sum(_num(e.get("surface_score"), 0.7) for e in path_edges) / n_edges,
+            "noise": 1.0 - (sum(_num(e.get("noise_score"), 0.5) for e in path_edges) / n_edges),
+            "crowd": 1.0 - (sum(_num(e.get("crowd_score"), 0.5) for e in path_edges) / n_edges),
+            "lighting": sum(_num(e.get("lighting_score"), 0.5) for e in path_edges) / n_edges,
+            "kerb": sum(_num(e.get("kerb_score"), 0.7) for e in path_edges) / n_edges,
+            "crossing_signals": sum(_num(e.get("crossing_signal_score"), 0.5) for e in path_edges) / n_edges,
+            "tactile": sum(_num(e.get("tactile_score"), 0.5) for e in path_edges) / n_edges,
         }
 
         # GeoJSON LineString
