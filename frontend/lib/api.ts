@@ -203,7 +203,7 @@ export async function analyzeSidewalkImage(file: File): Promise<SidewalkAnalysis
   const formData = new FormData();
   formData.append("image", file);
 
-  const res = await fetch(`${API_URL}/analyze-sidewalk`, {
+  const res = await fetch(`${API_BASE}/analyze-sidewalk`, {
     method: "POST",
     body: formData,
   });

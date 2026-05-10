@@ -1,15 +1,17 @@
 "use client";
 
 import {
-  Accessibility, Camera, Ear, Footprints, Info, MapPinned, Moon,
-  Route, Sparkles, Upload, UserRound,
+  Accessibility, Camera, Ear, Footprints, Info, LogIn, MapPinned, Moon,
+  Route, Sparkles, Upload, User, UserPlus, UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useId, useState, type ComponentType } from "react";
 
+import { useAuth } from "@/components/auth-provider";
 import { MapView } from "@/components/access-map/map-view";
 import type { MapLayerToggle } from "@/components/access-map/types";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -17,21 +19,24 @@ import { Progress } from "@/components/ui/progress";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ACCESS_PROFILE_OPTIONS } from "@/lib/access-profiles";
 import {
   fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
   type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
 } from "@/lib/api";
+import type { RoutingProfileId } from "@/lib/profile-types";
+import { cn } from "@/lib/utils";
 
-const PROFILES = [
-  { value: "wheelchair", title: "Wheelchair", description: "Ramps & slope constraints", icon: Accessibility },
-  { value: "blind", title: "Blind / low vision", description: "Tactile cues & crossings", icon: Moon },
-  { value: "elderly", title: "Elderly", description: "Rest stops & glare", icon: Footprints },
-  { value: "neurodivergent", title: "Neurodivergent", description: "Noise & sensory load", icon: Ear },
-  { value: "temporary_injury", title: "Temporary injury", description: "Shorter distances", icon: UserRound },
-] as const;
-
-type ProfileValue = (typeof PROFILES)[number]["value"];
+const PROFILE_ICONS: Record<
+  RoutingProfileId,
+  ComponentType<{ className?: string; "aria-hidden"?: boolean }>
+> = {
+  wheelchair: Accessibility,
+  blind: Moon,
+  elderly: Footprints,
+  neurodivergent: Ear,
+  temporary_injury: UserRound,
+};
 
 const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true, accessibilityPoints: true };
 
@@ -47,7 +52,16 @@ const SCORE_LABELS: Record<string, string> = {
 
 export function AccessDashboard() {
   const scoringId = useId();
-  const [profile, setProfile] = useState<ProfileValue>("wheelchair");
+  const {
+    configured: supabaseReady,
+    ready: authReady,
+    user,
+    profile: accountProfile,
+    signingOut,
+    signOut,
+  } = useAuth();
+  const [profile, setProfile] = useState<RoutingProfileId>("wheelchair");
+  const [syncedRoutingFromAccount, setSyncedRoutingFromAccount] = useState(false);
   const [layers, setLayers] = useState<MapLayerToggle>(defaultLayers);
   const [consentGeminiTerms, setConsentGeminiTerms] = useState(true);
 
@@ -64,10 +78,20 @@ export function AccessDashboard() {
   const [clickMode, setClickMode] = useState<"origin" | "dest">("origin");
 
   // Gemini state
-  const [geminiFile, setGeminiFile] = useState<File | null>(null);
   const [geminiLoading, setGeminiLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!authReady || !supabaseReady || !accountProfile?.onboarding_completed) return;
+    if (syncedRoutingFromAccount) return;
+    setProfile(accountProfile.routing_profile);
+    setSyncedRoutingFromAccount(true);
+  }, [authReady, supabaseReady, accountProfile, syncedRoutingFromAccount]);
+
+  useEffect(() => {
+    if (!user) setSyncedRoutingFromAccount(false);
+  }, [user]);
 
   // Fetch route when origin, destination, or profile changes
   useEffect(() => {
@@ -113,7 +137,6 @@ export function AccessDashboard() {
     const file = e.target.files?.[0];
     if (!file || !consentGeminiTerms) return;
 
-    setGeminiFile(file);
     setGeminiLoading(true);
     setGeminiResult(null);
     setGeminiError(null);
@@ -121,8 +144,8 @@ export function AccessDashboard() {
     try {
       const result = await analyzeSidewalkImage(file);
       setGeminiResult(result);
-    } catch (err: any) {
-      setGeminiError(err.message);
+    } catch (err: unknown) {
+      setGeminiError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
       setGeminiLoading(false);
     }
@@ -153,7 +176,50 @@ export function AccessDashboard() {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 md:justify-end">
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            {/* Do not gate on authReady — if it never flips true, auth links disappeared entirely */}
+            {user ? (
+              <>
+                <Link
+                  href="/profile"
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <User className="size-3.5 opacity-80" aria-hidden />
+                  Profile
+                </Link>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8"
+                  type="button"
+                  disabled={signingOut}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    signOut();
+                  }}
+                >
+                  {signingOut ? "Signing out…" : "Sign out"}
+                </Button>
+              </>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Link
+                  href="/login"
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <LogIn className="size-3.5 opacity-90" aria-hidden />
+                  Sign in
+                </Link>
+                <Link
+                  href="/signup"
+                  className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-8 gap-1.5 inline-flex")}
+                >
+                  <UserPlus className="size-3.5 opacity-90" aria-hidden />
+                  Sign up
+                </Link>
+              </div>
+            )}
             <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
               <Sparkles className="size-3.5 opacity-70" aria-hidden />
               Gemini storyboard
@@ -176,11 +242,26 @@ export function AccessDashboard() {
           <Card className="shadow-md shadow-black/[0.02] ring-1 ring-black/[0.03] dark:shadow-black/35 dark:ring-white/[0.06]">
             <CardHeader className="pb-3">
               <CardTitle className="font-semibold text-base">Disability profile</CardTitle>
-              <CardDescription>Select a profile to remap routing weights.</CardDescription>
+              <CardDescription className="space-y-1">
+                <span>Select a profile to remap routing weights.</span>
+                {!user && (
+                  <span className="block text-[0.8125rem] leading-snug">
+                    <Link href="/signup" className="font-medium text-primary underline-offset-4 hover:underline">
+                      Sign up
+                    </Link>
+                    {" · "}
+                    <Link href="/login" className="font-medium text-primary underline-offset-4 hover:underline">
+                      Sign in
+                    </Link>
+                    <span className="text-muted-foreground"> to save your preferences.</span>
+                  </span>
+                )}
+              </CardDescription>
             </CardHeader>
             <CardContent className="pt-0">
-              <RadioGroup value={profile} onValueChange={(v) => setProfile(v as ProfileValue)} className="gap-2.5">
-                {PROFILES.map(({ value, title, description, icon: Icon }) => {
+              <RadioGroup value={profile} onValueChange={(v) => setProfile(v as RoutingProfileId)} className="gap-2.5">
+                {ACCESS_PROFILE_OPTIONS.map(({ value, title, description }) => {
+                  const Icon = PROFILE_ICONS[value];
                   const id = `profile-${value}`;
                   return (
                     <Label key={value} htmlFor={id} className="flex cursor-pointer items-start gap-3 rounded-2xl border border-border/60 bg-card/80 px-3.5 py-3 shadow-none transition-colors hover:border-primary/20 hover:bg-muted/45 dark:border-border dark:hover:border-primary/30">
@@ -420,7 +501,7 @@ export function AccessDashboard() {
                         </Badge>
                       </div>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => { setGeminiResult(null); setGeminiFile(null); }}>Analyze another</Button>
+                    <Button variant="outline" size="sm" onClick={() => setGeminiResult(null)}>Analyze another</Button>
                   </div>
                   
                   <div className="grid grid-cols-2 gap-3">

@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
+
+import { AuthProvider } from "@/components/auth-provider";
+
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -28,11 +31,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body
+        suppressHydrationWarning
         className={`${plusJakarta.variable} ${jetbrainsMono.variable} font-sans text-[15px] leading-[1.55] tracking-[-0.01em] antialiased`}
       >
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
