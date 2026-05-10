@@ -78,18 +78,15 @@ def run_pipeline(
     # Step 1: Build graph
     print("\n[1/4] Building pedestrian graph...")
     result.graph = build_pedestrian_graph(osm_dir)
-
     if result.graph.number_of_edges() == 0:
         print("ERROR: No edges in graph. Check data files.")
         return result
-
     # Step 2: Elevation
     if not skip_elevation:
         print("\n[2/4] Enriching with elevation data...")
         enrich_with_elevation(result.graph)
     else:
         print("\n[2/4] Skipping elevation (skip_elevation=True)")
-
     # Step 3: Scoring
     print("\n[3/4] Computing accessibility scores...")
     result.buildings = load_buildings(osm_dir)
@@ -97,7 +94,6 @@ def run_pipeline(
     acc_features = load_accessibility_features(osm_dir)
     result.accessibility_features = acc_features
     lighting = load_lighting(osm_dir)
-
     enrich_graph_with_scores(
         G=result.graph,
         buildings=result.buildings,
@@ -108,7 +104,9 @@ def run_pipeline(
         hour=hour,
         is_weekday=is_weekday,
     )
-
+    # Step 3.5: Add proximity shortcuts AFTER scoring
+    from .graph_builder import add_proximity_shortcuts
+    add_proximity_shortcuts(result.graph, max_distance_m=80)
     # Step 4: GTFS
     print("\n[4/4] Loading transit data...")
     result.gtfs = load_gtfs_data(osm_dir)

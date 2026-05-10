@@ -450,3 +450,63 @@ def load_lighting(data_dir: Path) -> list[dict]:
 
     print(f"  Loaded {len(lights)} lighting features from local file")
     return lights
+
+def add_proximity_shortcuts(G: nx.Graph, max_distance_m: float = 80.0):
+    """
+    Add direct edges between nearby nodes that have no short path.
+    This lets routing cut across open fields, parks, and plazas
+    instead of going all the way around them.
+    """
+    from scipy.spatial import KDTree
+    import numpy as np
+
+    # Build spatial index
+    node_ids = []
+    coords = []
+    for nid, data in G.nodes(data=True):
+        if "lat" in data and "lon" in data:
+            node_ids.append(nid)
+            coords.append([data["lat"], data["lon"]])
+
+    if len(coords) < 2:
+        return 0
+
+    coords_arr = np.array(coords)
+    tree = KDTree(coords_arr)
+
+    # ~80m in lat/lon degrees (rough approximation)
+    radius_deg = max_distance_m / 111_000
+
+    added = 0
+    for i, nid in enumerate(node_ids):
+        neighbors = tree.query_ball_point(coords_arr[i], radius_deg)
+        for j in neighbors:
+            other = node_ids[j]
+            if nid == other:
+                continue
+            if G.has_edge(nid, other):
+                continue
+
+            # Calculate actual distance in meters
+            lat1, lon1 = coords_arr[i]
+            lat2, lon2 = coords_arr[j]
+            dlat = (lat2 - lat1) * 111_000
+            dlon = (lon2 - lon1) * 111_000 * np.cos(np.radians((lat1 + lat2) / 2))
+            dist_m = np.sqrt(dlat**2 + dlon**2)
+
+            if dist_m > max_distance_m or dist_m < 5:
+                continue
+
+            # Add a shortcut edge with "open terrain" properties
+            G.add_edge(nid, other,
+                distance_m=round(dist_m, 1),
+                surface="grass",
+                surface_score=0.5,      # grass/open terrain
+                has_stairs=False,
+                is_sidewalk=False,
+                is_shortcut=True,
+            )
+            added += 1
+
+    print(f"  Added {added} proximity shortcut edges (max {max_distance_m}m)")
+    return added
