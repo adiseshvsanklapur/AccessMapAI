@@ -20,7 +20,11 @@ from pydantic import BaseModel
 from pipeline.enrichment import run_pipeline, AccessibilityData
 from routing.engine import RoutingEngine
 from routing.profiles import list_profiles, get_profile
-from api import vision
+from api import vision, route_explanation
+from dotenv import load_dotenv
+
+# Load backend/.env into os.environ (Python does not read .env files automatically)
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -79,6 +83,7 @@ app.add_middleware(
 )
 
 app.include_router(vision.router)
+app.include_router(route_explanation.router)
 
 # ---------------------------------------------------------------------------
 # Request/Response models

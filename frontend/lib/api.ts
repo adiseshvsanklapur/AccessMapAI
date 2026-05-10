@@ -199,11 +199,33 @@ export async function fetchAccessibilityPoints(
   return res.points;
 }
 
+export interface RouteExplanationPayload {
+  profile: string;
+  profile_display: string;
+  distance_m: number;
+  explanation_baseline: string;
+  scores: RouteScores;
+  directions_preview: Pick<DirectionStep, "step" | "instruction" | "distance_m">[];
+}
+
+export interface RouteWhyResponse {
+  explanation: string;
+}
+
+export async function fetchRouteWhyExplanation(
+  payload: RouteExplanationPayload,
+): Promise<RouteWhyResponse> {
+  return apiFetch<RouteWhyResponse>("/explain-route", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function analyzeSidewalkImage(file: File): Promise<SidewalkAnalysisResult> {
   const formData = new FormData();
   formData.append("image", file);
 
-  const res = await fetch(`${API_URL}/analyze-sidewalk`, {
+  const res = await fetch(`${API_BASE}/analyze-sidewalk`, {
     method: "POST",
     body: formData,
   });

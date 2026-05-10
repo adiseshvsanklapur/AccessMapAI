@@ -19,7 +19,7 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
+  fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage, fetchRouteWhyExplanation,
   type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
 } from "@/lib/api";
 
@@ -69,6 +69,10 @@ export function AccessDashboard() {
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
 
+  const [routeWhyExplanation, setRouteWhyExplanation] = useState<string | null>(null);
+  const [routeWhyLoading, setRouteWhyLoading] = useState(false);
+  const [routeWhyError, setRouteWhyError] = useState<string | null>(null);
+
   // Fetch route when origin, destination, or profile changes
   useEffect(() => {
     if (!origin || !destination) return;
@@ -83,6 +87,50 @@ export function AccessDashboard() {
 
     return () => { cancelled = true; };
   }, [origin, destination, profile]);
+
+  useEffect(() => {
+    if (loading) {
+      setRouteWhyExplanation(null);
+      setRouteWhyError(null);
+      setRouteWhyLoading(false);
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (!routeData || loading) return;
+    let cancelled = false;
+    setRouteWhyLoading(true);
+    setRouteWhyError(null);
+
+    fetchRouteWhyExplanation({
+      profile: routeData.profile,
+      profile_display: routeData.profile_display,
+      distance_m: routeData.distance_m,
+      explanation_baseline: routeData.explanation,
+      scores: routeData.scores,
+      directions_preview: routeData.directions.slice(0, 8).map((d) => ({
+        step: d.step,
+        instruction: d.instruction,
+        distance_m: d.distance_m,
+      })),
+    })
+      .then((r) => {
+        if (!cancelled) setRouteWhyExplanation(r.explanation);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setRouteWhyError(err instanceof Error ? err.message : "Explanation request failed");
+          setRouteWhyExplanation(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRouteWhyLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeData, loading]);
 
   // Fetch heatmap & transit on mount
   useEffect(() => {
@@ -213,7 +261,15 @@ export function AccessDashboard() {
             <CardHeader className="relative pb-2">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <CardTitle className="text-base tracking-tight">Why this route?</CardTitle>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="text-base tracking-tight">Why this route?</CardTitle>
+                    {routeWhyExplanation && (
+                      <Badge variant="secondary" className="h-5 gap-1 px-1.5 py-0 font-mono text-[10px] uppercase tracking-wide">
+                        <Sparkles className="size-3 opacity-80" aria-hidden />
+                        Gemini
+                      </Badge>
+                    )}
+                  </div>
                   <CardDescription>
                     {routeData ? `${routeData.distance_m}m via ${routeData.profile_display}` : "Select origin & destination"}
                   </CardDescription>
@@ -227,11 +283,22 @@ export function AccessDashboard() {
               {routeData && !loading && (
                 <>
                   <p className="text-[0.875rem] leading-snug tracking-tight text-foreground/90 md:text-[0.894rem]">
-                    This route was selected <span className="font-semibold text-primary">because</span> it:
+                    Optimized for <span className="font-semibold text-primary">{routeData.profile_display}</span>
+                    {routeWhyLoading && (
+                      <span className="ml-2 inline-flex items-center gap-1 text-muted-foreground text-xs font-normal normal-case">
+                        <Sparkles className="size-3 animate-pulse opacity-70" aria-hidden />
+                        Tailoring with Gemini…
+                      </span>
+                    )}
                   </p>
-                  <p className="text-[0.875rem] leading-relaxed text-foreground/90">
-                    {routeData.explanation}
+                  <p className="whitespace-pre-line text-[0.875rem] leading-relaxed text-foreground/90">
+                    {routeWhyExplanation ?? routeData.explanation}
                   </p>
+                  {routeWhyError && (
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      Gemini unavailable ({routeWhyError}). Showing the routing engine summary above.
+                    </p>
+                  )}
                 </>
               )}
             </CardContent>
@@ -498,7 +565,7 @@ export function AccessDashboard() {
                   <Separator />
                   <div className="space-y-2">
                     <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Route explanation</p>
-                    <p className="text-sm leading-relaxed">{routeData.explanation}</p>
+                    <p className="whitespace-pre-line text-sm leading-relaxed">{routeWhyExplanation ?? routeData.explanation}</p>
                   </div>
                   <div className="space-y-2">
                     <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Route stats</p>
