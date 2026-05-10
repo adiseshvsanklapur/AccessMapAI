@@ -187,16 +187,81 @@ Wired the existing Next.js UI shell (built by teammate) to the live backend API.
 3. Select accessibility profile → route recomputes with profile-specific weights
 4. Click map → set origin/destination → new route appears with scores
 5. Toggle heatmap → see accessibility score overlay across Davis
-6. Toggle transit → see 292 bus stops with wheelchair indicators
-7. Score breakdown shows slope, surface, noise, crowd, lighting, curb ramps
+6. Integrate Unitrans GTFS stops into the graph logic (bonus). ✅
+7. Implement routing profiles (Wheelchair, Blind, Elderly) that use cost functions weighted by noise, crowd, surface, and slope. ✅
+8. Add turn-by-turn text directions with bearing calculation for the Blind profile. ✅
 
 ### What's not yet built
 
-- [ ] Gemini image analysis endpoint (image upload → CV accessibility assessment)
 - [ ] Real-time elevation enrichment (currently skipped via `SKIP_ELEVATION=true` for fast startup)
 - [ ] Yolobus GTFS integration (endpoint currently down)
 - [ ] User authentication / route saving
 - [ ] Mobile-responsive fine-tuning
+
+---
+
+## Phase 5: Accessibility Points on Map ✅
+
+Add real accessibility infrastructure markers to the map so users can see exactly where curb ramps, crossings, tactile paving, and wheelchair-accessible locations are.
+
+### Data Available
+
+We already have `data/osm/accessibility_features.json` with **1,180 features**:
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| Crossings | 592 | Marked/signalized pedestrian crossings |
+| Other (ways) | 429 | Wheelchair-tagged ways, accessible paths |
+| Tactile Paving | 91 | Truncated dome / tactile strip locations |
+| Lowered Kerbs | 44 | ADA-compliant curb ramps |
+| Wheelchair: Yes | 16 | Wheelchair-accessible locations |
+| Raised Kerbs | 4 | Non-accessible curb edges |
+| Wheelchair: Limited | 3 | Partially accessible |
+| Wheelchair: No | 1 | Not accessible |
+
+### Plan
+
+#### Backend: New `/accessibility-points` endpoint
+
+**File:** `backend/main.py`
+
+- Add `GET /accessibility-points` endpoint
+- Parse `accessibility_features.json` at startup (already loaded in pipeline)
+- Return features as a list with: `lat`, `lon`, `category`, `tags`, `icon`
+- Support optional `bounds` query params to filter by viewport
+- Categories: `crossing`, `kerb_lowered`, `kerb_raised`, `tactile_paving`, `wheelchair_yes`, `wheelchair_limited`, `wheelchair_no`
+
+#### Frontend: Accessibility points layer
+
+**Files to modify:**
+- `components/access-map/types.ts` — add `accessibilityPoints` prop
+- `components/access-map/leaflet-map.tsx` — render markers with category-specific colors/icons
+- `components/access-dashboard.tsx` — fetch from `/accessibility-points`, pass to map, add layer toggle
+
+**Marker design by category:**
+
+| Category | Color | Icon/Shape | Meaning |
+|----------|-------|-----------|---------|
+| Crossing | 🔵 Blue | Circle | Pedestrian crossing |
+| Lowered Kerb | 🟢 Green | Diamond | ADA curb ramp present |
+| Raised Kerb | 🔴 Red | Diamond | Barrier — no ramp |
+| Tactile Paving | 🟣 Purple | Square | Tactile guidance strip |
+| Wheelchair Yes | 🟢 Green | ♿ marker | Fully accessible |
+| Wheelchair Limited | 🟡 Yellow | ♿ marker | Partially accessible |
+| Wheelchair No | 🔴 Red | ♿ marker | Not accessible |
+
+**Layer toggle:** A new "Accessibility Points" switch in the Map Overlays panel, defaulting to ON.
+
+**Tooltip on hover:** Shows the category name and any relevant OSM tags (e.g., "Lowered Kerb · Tactile Paving: Yes").
+
+### Implementation Steps
+
+1. Add `GET /accessibility-points` endpoint to `backend/main.py`
+2. Add `AccessibilityPoint` type to `frontend/lib/api.ts`
+3. Add `fetchAccessibilityPoints()` function to `frontend/lib/api.ts`
+4. Add `accessibilityPoints` to `MapLayerToggle` and `AccessibilityMapProps` in `types.ts`
+5. Render category-colored `CircleMarker`s with tooltips in `leaflet-map.tsx`
+6. Fetch on mount and wire layer toggle in `access-dashboard.tsx`
 
 ---
 

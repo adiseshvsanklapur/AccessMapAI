@@ -60,11 +60,21 @@ const destIcon = L.divIcon({
 // Heatmap color scale
 // ---------------------------------------------------------------------------
 function scoreToColor(value: number): string {
-  // 0 = red (bad), 0.5 = yellow, 1.0 = green (good)
-  if (value < 0.33) return `rgba(239, 68, 68, ${0.4 + value})`;
-  if (value < 0.66) return `rgba(250, 204, 21, ${0.3 + value * 0.4})`;
-  return `rgba(34, 197, 94, ${0.3 + value * 0.3})`;
+  // Crowd/traffic heatmap: high value = red (busy), low value = green (calm)
+  if (value > 0.66) return `rgba(239, 68, 68, ${0.4 + value * 0.4})`;   // red — heavy traffic
+  if (value > 0.33) return `rgba(250, 204, 21, ${0.3 + value * 0.4})`;  // yellow — moderate
+  return `rgba(34, 197, 94, ${0.3 + value * 0.3})`;                      // green — calm
 }
+// Accessibility point category colors
+const CATEGORY_COLORS: Record<string, string> = {
+  crossing: "#3b82f6",         // blue
+  kerb_lowered: "#10b981",     // green
+  kerb_raised: "#ef4444",      // red
+  tactile_paving: "#8b5cf6",   // purple
+  wheelchair_yes: "#10b981",   // green
+  wheelchair_limited: "#f59e0b", // amber
+  wheelchair_no: "#ef4444",    // red
+};
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -115,6 +125,7 @@ export function AccessibilityLeafletMap({
   routeGeoJSON,
   heatmapPoints,
   transitStops,
+  accessibilityPoints,
   originLatLon,
   destLatLon,
   onMapClick,
@@ -259,6 +270,29 @@ export function AccessibilityLeafletMap({
                 {stop.wheelchair_boarding === "1" && (
                   <span className="ml-1 text-green-600">♿</span>
                 )}
+              </Tooltip>
+            </CircleMarker>
+          ))}
+        </Pane>
+      )}
+
+      {/* Accessibility infrastructure points */}
+      {layers.accessibilityPoints && accessibilityPoints && accessibilityPoints.length > 0 && (
+        <Pane name="accessibility-pts" style={{ zIndex: 435 }}>
+          {accessibilityPoints.map((pt, idx) => (
+            <CircleMarker
+              key={`acc-${idx}`}
+              center={[pt.lat, pt.lon]}
+              radius={5}
+              pathOptions={{
+                color: "#ffffff",
+                fillColor: CATEGORY_COLORS[pt.category] ?? "#6b7280",
+                fillOpacity: 0.85,
+                weight: 1.5,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -6]}>
+                <span className="text-xs font-medium">{pt.label}</span>
               </Tooltip>
             </CircleMarker>
           ))}

@@ -216,6 +216,82 @@ def compute_kerb_score(
 
 
 # ---------------------------------------------------------------------------
+# Crossing Signal Score (for blind / low-vision users)
+# ---------------------------------------------------------------------------
+def compute_crossing_signal_score(
+    lat: float, lon: float,
+    acc_tree: Optional[KDTree],
+    acc_data: list[dict],
+    radius_deg: float = 0.0005,  # ~55 meters
+) -> float:
+    """
+    Score based on proximity to signalized crossings.
+    Higher = closer to an audible/signalized crossing.
+    Important for blind users who rely on audio cues.
+    """
+    if acc_tree is None:
+        return 0.5
+
+    nearby_idx = acc_tree.query_ball_point([lat, lon], r=radius_deg)
+    if not nearby_idx:
+        return 0.3  # no crossings nearby
+
+    best = 0.3
+    for idx in nearby_idx:
+        if idx >= len(acc_data):
+            continue
+        tags = acc_data[idx].get("tags", {})
+        crossing = tags.get("crossing", "")
+        has_signals = (
+            crossing == "traffic_signals"
+            or tags.get("crossing:signals") == "yes"
+        )
+        if has_signals:
+            best = max(best, 1.0)  # signalized = best
+        elif crossing in ("marked", "zebra"):
+            best = max(best, 0.7)  # marked but no signal
+        elif crossing == "uncontrolled":
+            best = max(best, 0.5)
+
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Tactile Paving Score (for blind / low-vision users)
+# ---------------------------------------------------------------------------
+def compute_tactile_score(
+    lat: float, lon: float,
+    acc_tree: Optional[KDTree],
+    acc_data: list[dict],
+    radius_deg: float = 0.0004,  # ~44 meters
+) -> float:
+    """
+    Score based on proximity to tactile paving features.
+    Higher = tactile guidance strips nearby (good for blind navigation).
+    """
+    if acc_tree is None:
+        return 0.5
+
+    nearby_idx = acc_tree.query_ball_point([lat, lon], r=radius_deg)
+    if not nearby_idx:
+        return 0.3  # no tactile features
+
+    tactile_count = 0
+    for idx in nearby_idx:
+        if idx >= len(acc_data):
+            continue
+        tags = acc_data[idx].get("tags", {})
+        if tags.get("tactile_paving") == "yes":
+            tactile_count += 1
+
+    if tactile_count >= 2:
+        return 1.0
+    elif tactile_count == 1:
+        return 0.8
+    return 0.4
+
+
+# ---------------------------------------------------------------------------
 # Main enrichment function
 # ---------------------------------------------------------------------------
 def enrich_graph_with_scores(
@@ -291,6 +367,16 @@ def enrich_graph_with_scores(
 
         # Kerb score
         data["kerb_score"] = compute_kerb_score(
+            mid_lat, mid_lon, acc_tree, acc_data
+        )
+
+        # Crossing signal score (for blind users)
+        data["crossing_signal_score"] = compute_crossing_signal_score(
+            mid_lat, mid_lon, acc_tree, acc_data
+        )
+
+        # Tactile paving score (for blind users)
+        data["tactile_score"] = compute_tactile_score(
             mid_lat, mid_lon, acc_tree, acc_data
         )
 

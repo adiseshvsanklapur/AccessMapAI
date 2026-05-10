@@ -89,6 +89,17 @@ def compute_edge_cost(
     if data.get("has_stairs", False):
         penalty += profile.stairs_penalty
 
+    # Crossing signal bonus (negative penalty = lower cost for signalized crossings)
+    crossing_signal = data.get("crossing_signal_score", 0.5)
+    penalty -= profile.crossing_signal_weight * crossing_signal * 0.3
+
+    # Tactile paving bonus (negative penalty = lower cost for tactile paving routes)
+    tactile = data.get("tactile_score", 0.5)
+    penalty -= profile.tactile_weight * tactile * 0.3
+
+    # Ensure penalty doesn't go below -0.5 (route shouldn't be "free")
+    penalty = max(penalty, -0.5)
+
     # Final cost: distance scaled by (1 + penalty)
     return distance * (1 + penalty)
 
@@ -177,6 +188,23 @@ def _generate_explanation(
         if avg_crowd < 0.5:
             reasons.append("avoiding crowded walkways")
 
+        # Crossing signal info
+        avg_crossing = sum(e.get("crossing_signal_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
+        if avg_crossing > 0.7:
+            reasons.append("preferring signalized crossings with audio cues")
+        elif avg_crossing > 0.5:
+            reasons.append("using marked crossings where available")
+
+        # Tactile paving info
+        avg_tactile = sum(e.get("tactile_score", 0.5) for e in path_edges) / max(len(path_edges), 1)
+        if avg_tactile > 0.7:
+            reasons.append("along paths with tactile paving guidance")
+        elif avg_tactile > 0.5:
+            reasons.append("with some tactile paving coverage")
+
+        if avg_surface > 0.7:
+            reasons.append("on consistent, predictable surfaces")
+
     elif profile.name == "neurodivergent":
         if avg_noise < 0.4:
             reasons.append("minimizing noise exposure")
@@ -201,6 +229,110 @@ def _generate_explanation(
         reasons.append("(note: some sections have limited lighting)")
 
     return ", ".join(reasons) + "."
+
+
+def _compute_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Compute bearing in degrees from point 1 to point 2."""
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = lon2 - lon1
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+    bearing = math.degrees(math.atan2(x, y))
+    return (bearing + 360) % 360
+
+
+def _bearing_to_direction(bearing: float) -> str:
+    """Convert bearing to cardinal direction."""
+    dirs = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
+    idx = round(bearing / 45) % 8
+    return dirs[idx]
+
+
+def _turn_instruction(angle_change: float) -> str:
+    """Convert bearing change to turn instruction."""
+    if abs(angle_change) < 20:
+        return "continue straight"
+    elif angle_change > 0:
+        if angle_change > 120:
+            return "make a sharp right"
+        elif angle_change > 60:
+            return "turn right"
+        else:
+            return "bear right"
+    else:
+        if angle_change < -120:
+            return "make a sharp left"
+        elif angle_change < -60:
+            return "turn left"
+        else:
+            return "bear left"
+
+
+def _generate_directions(
+    path_coords: list[dict],
+    path_edges: list[dict],
+) -> list[dict]:
+    """Generate step-by-step text directions from a route path."""
+    if len(path_coords) < 2:
+        return []
+
+    steps = []
+
+    # First step: head in initial direction
+    p0, p1 = path_coords[0], path_coords[1]
+    bearing = _compute_bearing(p0["lat"], p0["lon"], p1["lat"], p1["lon"])
+    direction = _bearing_to_direction(bearing)
+
+    steps.append({
+        "step": 1,
+        "instruction": f"Head {direction}",
+        "distance_m": round(path_edges[0].get("distance_m", 0), 1) if path_edges else 0,
+        "surface": path_edges[0].get("surface", "paved") if path_edges else "unknown",
+    })
+
+    # Subsequent steps: detect turns
+    prev_bearing = bearing
+    cumulative_dist = path_edges[0].get("distance_m", 0) if path_edges else 0
+
+    for i in range(1, len(path_coords) - 1):
+        p_prev, p_curr, p_next = path_coords[i-1], path_coords[i], path_coords[i+1]
+        new_bearing = _compute_bearing(p_curr["lat"], p_curr["lon"], p_next["lat"], p_next["lon"])
+
+        # Calculate turn angle (-180 to 180)
+        angle_change = new_bearing - prev_bearing
+        if angle_change > 180:
+            angle_change -= 360
+        elif angle_change < -180:
+            angle_change += 360
+
+        edge_dist = path_edges[i].get("distance_m", 0) if i < len(path_edges) else 0
+
+        # Only report significant turns (> 20 degrees)
+        if abs(angle_change) > 20:
+            turn = _turn_instruction(angle_change)
+            surface = path_edges[i].get("surface", "paved") if i < len(path_edges) else "unknown"
+
+            steps.append({
+                "step": len(steps) + 1,
+                "instruction": f"In {round(cumulative_dist)}m, {turn}",
+                "distance_m": round(edge_dist, 1),
+                "surface": surface,
+            })
+            cumulative_dist = edge_dist
+        else:
+            cumulative_dist += edge_dist
+
+        prev_bearing = new_bearing
+
+    # Final step: arrive
+    steps.append({
+        "step": len(steps) + 1,
+        "instruction": f"Continue {round(cumulative_dist)}m to your destination",
+        "distance_m": round(cumulative_dist, 1),
+        "surface": "paved",
+    })
+
+    return steps
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +439,8 @@ class RoutingEngine:
             "crowd": 1.0 - (sum(e.get("crowd_score", 0.5) for e in path_edges) / n_edges),
             "lighting": sum(e.get("lighting_score", 0.5) for e in path_edges) / n_edges,
             "kerb": sum(e.get("kerb_score", 0.7) for e in path_edges) / n_edges,
+            "crossing_signals": sum(e.get("crossing_signal_score", 0.5) for e in path_edges) / n_edges,
+            "tactile": sum(e.get("tactile_score", 0.5) for e in path_edges) / n_edges,
         }
 
         # GeoJSON LineString
@@ -326,6 +460,7 @@ class RoutingEngine:
         }
 
         explanation = _generate_explanation(path_edges, profile)
+        directions = _generate_directions(path_coords, path_edges)
 
         return {
             "origin": {"lat": origin_lat, "lon": origin_lon},
@@ -336,6 +471,7 @@ class RoutingEngine:
             "path": path_coords,
             "edges": path_edges,
             "explanation": explanation,
+            "directions": directions,
             "scores": {k: round(v, 3) for k, v in scores.items()},
             "geojson": geojson,
         }

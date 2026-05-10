@@ -28,6 +28,8 @@ class AccessibilityProfile:
     stairs_penalty: float = 1.0       # multiplier for stair edges
     width_min: Optional[float] = None  # minimum path width (meters)
     kerb_weight: float = 0.3
+    crossing_signal_weight: float = 0.0  # preference for signalized crossings
+    tactile_weight: float = 0.0          # preference for tactile paving routes
 
     # Hard constraints
     avoid_stairs: bool = False
@@ -62,7 +64,7 @@ PROFILES = {
     "blind": AccessibilityProfile(
         name="blind",
         display_name="Blind / Low Vision",
-        description="Prioritizes tactile paving, well-lit paths, consistent surfaces, and avoids noisy areas.",
+        description="Prioritizes tactile paving, signalized crossings, well-lit paths, consistent surfaces, and avoids noisy areas.",
         slope_weight=0.3,
         surface_weight=0.7,
         noise_weight=0.8,  # noise interferes with echolocation / orientation
@@ -70,6 +72,8 @@ PROFILES = {
         lighting_weight=0.5,  # less relevant but still matters for low vision
         stairs_penalty=2.0,
         kerb_weight=0.8,  # tactile paving at kerbs
+        crossing_signal_weight=0.85,  # strongly prefer signalized crossings
+        tactile_weight=0.8,  # strongly prefer tactile paving routes
         avoid_stairs=False,
         avoid_unpaved=True,
     ),
