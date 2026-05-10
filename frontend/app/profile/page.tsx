@@ -140,7 +140,7 @@ export default function ProfilePage() {
       <div className="mx-auto max-w-lg space-y-6">
         <div className="flex items-center justify-between gap-4">
           <h1 className="font-semibold text-2xl tracking-tight">Profile</h1>
-          <Link href="/" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+          <Link href="/app" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
             Map
           </Link>
         </div>

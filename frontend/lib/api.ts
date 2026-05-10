@@ -19,6 +19,18 @@ export interface RouteScores {
   kerb: number;
   crossing_signals: number;
   tactile: number;
+  hazards?: number;
+}
+
+export interface HazardOnRoute {
+  id: string;
+  type: string;
+  description: string;
+  lat: number;
+  lon: number;
+  distance_m: number;
+  severity: "low" | "medium" | "high";
+  affected_profiles: string[];
 }
 
 export interface RoutePathPoint {
@@ -58,6 +70,7 @@ export interface RouteResponse {
   directions: DirectionStep[];
   scores: RouteScores;
   geojson: RouteGeoJSON;
+  hazards_on_route?: HazardOnRoute[];
   error?: string;
 }
 

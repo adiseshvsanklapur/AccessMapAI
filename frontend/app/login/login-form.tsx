@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 
 export function LoginForm() {
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/";
+  const next = searchParams.get("next") ?? "/app";
   const configured = isSupabaseConfigured();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

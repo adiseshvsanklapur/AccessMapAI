@@ -65,8 +65,8 @@ export default function ProfileSetupPage() {
   function goHomeAfterSave() {
     // Full navigation avoids a race: AuthProvider's onboarding gate still has stale
     // `profile` until the next render, and would router.replace("/profile/setup")
-    // if we only client-navigate with router.push("/") before state catches up.
-    window.location.assign("/");
+    // if we only client-navigate with router.push("/app") before state catches up.
+    window.location.assign("/app");
   }
 
   async function onSubmit(e: React.FormEvent) {

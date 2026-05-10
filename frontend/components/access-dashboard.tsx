@@ -51,6 +51,7 @@ const SCORE_LABELS: Record<string, string> = {
   slope: "Slope", surface: "Surface", noise: "Noise", crowd: "Crowd",
   lighting: "Lighting", kerb: "Curb Ramps",
   crossing_signals: "Audible Crossings", tactile: "Tactile Paving",
+  hazards: "Hazards Nearby",
 };
 
 type ClickMode = "origin" | "dest" | "hazard";
@@ -94,6 +95,13 @@ export function AccessDashboard() {
   const [geminiLoading, setGeminiLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [routePanelOpen, setRoutePanelOpen] = useState(true);
+
+  const buildLabel =
+    (process.env.NEXT_PUBLIC_BUILD_LABEL?.trim() ||
+      process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+      process.env.NEXT_PUBLIC_GIT_SHA?.slice(0, 7) ||
+      "dev") as string;
 
   useEffect(() => {
     if (!authReady || !supabaseReady || !accountProfile?.onboarding_completed) return;
@@ -334,6 +342,18 @@ export function AccessDashboard() {
                   <Badge variant="secondary" className="ml-2 align-middle font-mono text-[10px] tracking-wide uppercase">
                     Live
                   </Badge>
+                  <Badge
+                    variant="outline"
+                    className="ml-2 align-middle font-mono text-[10px] tracking-wide uppercase border-border/80 bg-background/60"
+                  >
+                    <span
+                      aria-hidden
+                      className={`mr-1 inline-block size-1.5 rounded-full ${
+                        backendReady ? "bg-emerald-400" : "bg-muted-foreground/60"
+                      }`}
+                    />
+                    build {buildLabel}
+                  </Badge>
                 </p>
                 <p className="text-muted-foreground text-[0.813rem] leading-snug md:max-w-lg">
                   Explainable accessibility routing powered by real OSM data.
@@ -384,18 +404,6 @@ export function AccessDashboard() {
                   Sign up
                 </Link>
               </div>
-            )}
-            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
-              <Sparkles className="size-3.5 opacity-70" aria-hidden />
-              Gemini storyboard
-            </Badge>
-            <Badge variant="outline" className="gap-1.5 rounded-full border-border/80 bg-background/60 px-3 py-0.5 font-medium">
-              OSM tiles
-            </Badge>
-            {backendReady && (
-              <Badge className="gap-1.5 rounded-full bg-emerald-500/90 px-3 py-0.5 font-medium text-white">
-                Backend connected
-              </Badge>
             )}
           </div>
         </div>
@@ -478,84 +486,7 @@ export function AccessDashboard() {
             </CardContent>
           </Card>
 
-          {/* Combined route analysis: hero score + explanation + breakdown */}
-          <Card className="relative overflow-hidden bg-gradient-to-br from-primary/[0.10] via-card to-card">
-            <span aria-hidden className="pointer-events-none absolute -right-24 -top-24 size-72 rounded-full bg-primary/[0.12] blur-3xl" />
-            <CardHeader className="relative pb-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-1">
-                  <CardTitle id={scoringId} className="text-base tracking-tight">Route analysis</CardTitle>
-                  <CardDescription>
-                    {routeData ? `${routeData.distance_m}m via ${routeData.profile_display}` : "Select origin & destination"}
-                  </CardDescription>
-                </div>
-                <Route className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
-              </div>
-            </CardHeader>
-            <CardContent aria-labelledby={scoringId} className="relative space-y-4 pb-6 pt-0">
-              <div className="flex items-center gap-4 rounded-2xl border border-border bg-background/80 p-4">
-                <ScoreRing value={routeData ? overallScore : 0} color={routeData ? gradeColor : "#3f3a52"} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-semibold text-3xl tabular-nums tracking-tight">
-                      {routeData ? overallScore : "—"}
-                    </span>
-                    <span className="text-muted-foreground text-sm">/ 100</span>
-                  </div>
-                  {routeData && (
-                    <Badge
-                      variant="secondary"
-                      className="mt-1 font-medium"
-                      style={{ backgroundColor: `${gradeColor}1f`, color: gradeColor, borderColor: `${gradeColor}33` }}
-                    >
-                      {grade}
-                    </Badge>
-                  )}
-                  <p className="mt-2 text-muted-foreground text-xs">
-                    {routeData ? "Weighted accessibility score for this route" : "Waiting for route…"}
-                  </p>
-                </div>
-              </div>
-
-              {loading && <p className="text-sm text-muted-foreground animate-pulse">Computing route…</p>}
-              {error && <p className="text-sm text-red-400">Error: {error}</p>}
-              {routeData && !loading && (
-                <div className="rounded-xl border border-primary/15 bg-primary/[0.06] p-3.5">
-                  <p className="mb-1.5 font-medium text-primary text-xs uppercase tracking-wider">Why this route</p>
-                  <p className="text-[0.875rem] leading-relaxed text-foreground/90">
-                    {routeData.explanation}
-                  </p>
-                </div>
-              )}
-
-              {routeData && (
-                <div className="space-y-2">
-                  <p className="font-medium text-muted-foreground text-xs uppercase tracking-wider">Breakdown</p>
-                  <div className="space-y-2">
-                    {Object.entries(SCORE_LABELS).map(([key, label]) => {
-                      const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
-                      const pct = Math.round(val * 100);
-                      return (
-                        <div key={key} className="flex items-center gap-3 text-sm">
-                          <span className="w-24 text-muted-foreground text-xs">{label}</span>
-                          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-500"
-                              style={{
-                                width: `${pct}%`,
-                                backgroundColor: pct >= 80 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444",
-                              }}
-                            />
-                          </div>
-                          <span className="w-8 text-right tabular-nums text-xs font-medium">{pct}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Route analysis moved into a floating map panel (no sidebar scrolling). */}
 
           {/* Turn-by-turn directions */}
           <Card className="flex flex-col overflow-hidden max-h-[300px]">
@@ -710,6 +641,119 @@ export function AccessDashboard() {
             destLatLon={destination}
             onMapClick={handleMapClick}
           />
+
+          {/* Floating route analysis — always visible while mapping */}
+          <div className="pointer-events-none absolute left-4 right-4 top-[5.2rem] z-20 flex justify-start md:left-6 md:right-auto md:top-[5.5rem]">
+            <div className="pointer-events-auto w-full md:w-[min(420px,calc(100vw-3rem))]">
+              <div className="rounded-2xl border border-border bg-card shadow-[0_24px_60px_-24px_rgba(0,0,0,0.85)]">
+                <div className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-sm">Route analysis</p>
+                    <p className="truncate text-muted-foreground text-xs">
+                      {routeData ? `${routeData.distance_m}m · ${routeData.profile_display}` : "Select origin & destination"}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => setRoutePanelOpen((s) => !s)}
+                  >
+                    {routePanelOpen ? "Hide" : "Show"}
+                  </Button>
+                </div>
+
+                {routePanelOpen && (
+                  <div className="px-4 pb-4">
+                    <div className="flex items-center gap-4 rounded-2xl border border-border bg-background/80 p-4">
+                      <ScoreRing value={routeData ? overallScore : 0} color={routeData ? gradeColor : "#3f3a52"} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-semibold text-3xl tabular-nums tracking-tight">
+                            {routeData ? overallScore : "—"}
+                          </span>
+                          <span className="text-muted-foreground text-sm">/ 100</span>
+                        </div>
+                        {routeData && (
+                          <Badge
+                            variant="secondary"
+                            className="mt-1 font-medium"
+                            style={{ backgroundColor: `${gradeColor}1f`, color: gradeColor, borderColor: `${gradeColor}33` }}
+                          >
+                            {grade}
+                          </Badge>
+                        )}
+                        <p className="mt-2 text-muted-foreground text-xs">
+                          {routeData ? "Weighted accessibility score for this route" : "Waiting for route…"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {loading && <p className="text-sm text-muted-foreground animate-pulse">Computing route…</p>}
+                      {error && <p className="text-sm text-red-400">Error: {error}</p>}
+                      {routeData && !loading && routeData.hazards_on_route && routeData.hazards_on_route.length > 0 && (
+                        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-amber-200">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                          <div className="text-xs leading-relaxed">
+                            <span className="font-medium">
+                              {routeData.hazards_on_route.length} reported hazard{routeData.hazards_on_route.length === 1 ? "" : "s"} for your profile near this route
+                            </span>
+                            <span className="text-amber-200/80">
+                              {" — score reduced. "}
+                              {routeData.hazards_on_route
+                                .slice(0, 3)
+                                .map((h) => `${formatHazardType(h.type)} (${Math.round(h.distance_m)}m)`)
+                                .join(", ")}
+                              {routeData.hazards_on_route.length > 3 ? ", …" : ""}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {routeData && !loading && (
+                        <div className="rounded-xl border border-primary/15 bg-primary/[0.06] p-3.5">
+                          <p className="mb-1.5 font-medium text-primary text-xs uppercase tracking-wider">Why this route</p>
+                          <p className="text-[0.875rem] leading-relaxed text-foreground/90">
+                            {routeData.explanation}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {routeData && (
+                      <details className="mt-3 rounded-xl border border-border bg-muted/30 p-3">
+                        <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground">
+                          Breakdown
+                        </summary>
+                        <div className="mt-2 space-y-2">
+                          {Object.entries(SCORE_LABELS).map(([key, label]) => {
+                            const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
+                            const pct = Math.round(val * 100);
+                            return (
+                              <div key={key} className="flex items-center gap-3 text-sm">
+                                <span className="w-24 text-muted-foreground text-xs">{label}</span>
+                                <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all duration-500"
+                                    style={{
+                                      width: `${pct}%`,
+                                      backgroundColor: pct >= 80 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444",
+                                    }}
+                                  />
+                                </div>
+                                <span className="w-8 text-right tabular-nums text-xs font-medium">{pct}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </section>
       </main>
 
@@ -722,9 +766,6 @@ export function AccessDashboard() {
                   <CardTitle className="font-semibold text-base">Street image upload</CardTitle>
                   <CardDescription>Gemini scores curb geometry, tactile strips, glare, and pinch points.</CardDescription>
                 </div>
-                <Badge variant="outline" className="gap-1">
-                  <Camera className="size-3 opacity-70" aria-hidden /> Multimodal
-                </Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-4 pb-6">

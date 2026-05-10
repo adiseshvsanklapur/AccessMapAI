@@ -24,6 +24,28 @@ def _num(value, default: float) -> float:
         return default
 
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters between two lat/lon pairs."""
+    rlat1, rlon1 = math.radians(lat1), math.radians(lon1)
+    rlat2, rlon2 = math.radians(lat2), math.radians(lon2)
+    dlat, dlon = rlat2 - rlat1, rlon2 - rlon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return 6371000.0 * c
+
+
+def _hazard_applies(hazard, profile_names: Optional[list]) -> bool:
+    """True iff the hazard's affected_profiles overlaps any of the user's
+    selected profile names. If a hazard has no declared affected profiles,
+    treat it as universally applicable."""
+    affected = getattr(hazard, "affected_profiles", None) or []
+    if not affected:
+        return True
+    if profile_names:
+        return any(p in affected for p in profile_names)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Edge cost function
 # ---------------------------------------------------------------------------
@@ -32,6 +54,7 @@ def compute_edge_cost(
     profile: AccessibilityProfile,
     G: nx.Graph,
     active_hazards: Optional[list] = None,
+    profile_names: Optional[list] = None,
 ) -> float:
     """
     Compute the traversal cost of an edge based on the user's accessibility profile.
@@ -111,26 +134,20 @@ def compute_edge_cost(
     if data.get("is_sidewalk", False):
         penalty -= profile.sidewalk_weight * 0.4
 
-    # Apply dynamic hazard penalties
+    # Apply dynamic hazard penalties — match against the user's original
+    # profile selections, not the synthetic "combined_*" profile name.
     if active_hazards and (profile.name != "default"):
         u_data = G.nodes.get(u, {})
         edge_lat = u_data.get("lat")
         edge_lon = u_data.get("lon")
-        
+
         if edge_lat is not None and edge_lon is not None:
             for hazard in active_hazards:
-                if profile.name in hazard.affected_profiles:
-                    # Haversine distance
-                    lat1, lon1 = math.radians(edge_lat), math.radians(edge_lon)
-                    lat2, lon2 = math.radians(hazard.lat), math.radians(hazard.lon)
-                    dlat, dlon = lat2 - lat1, lon2 - lon1
-                    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-                    c = 2 * math.asin(math.sqrt(a))
-                    r = 6371000 # Radius of earth in meters
-                    dist_to_hazard = c * r
-                    
-                    if dist_to_hazard < 25:  # within 25 meters
-                        return distance * 50  # Huge penalty to avoid it
+                if not _hazard_applies(hazard, profile_names):
+                    continue
+                dist_to_hazard = _haversine_m(edge_lat, edge_lon, hazard.lat, hazard.lon)
+                if dist_to_hazard < 25:
+                    return distance * 50  # within 25m → effectively avoid
     
     # Ensure penalty doesn't go below -0.5 (route shouldn't be "free")
     penalty = max(penalty, -0.5)
@@ -498,7 +515,9 @@ class RoutingEngine:
 
         # Define cost function for this profile
         def cost_func(u, v, data):
-            return compute_edge_cost(u, v, data, profile, self.G, active_hazards)
+            return compute_edge_cost(
+                u, v, data, profile, self.G, active_hazards, profile_names=profile_names
+            )
 
         # Run Dijkstra
         try:
@@ -543,6 +562,51 @@ class RoutingEngine:
             "tactile": sum(_num(e.get("tactile_score"), 0.5) for e in path_edges) / n_edges,
         }
 
+        # ---- Hazards on the way -------------------------------------------------
+        # Scan path nodes vs. reported hazards that apply to the user's profile.
+        # Hazards within 60m of the path produce a penalty (closer = bigger).
+        hazards_on_route: list[dict] = []
+        hazard_penalty = 0.0
+        if active_hazards:
+            for hz in active_hazards:
+                if not _hazard_applies(hz, profile_names):
+                    continue
+                min_d = float("inf")
+                for p in path_coords:
+                    plat = p.get("lat")
+                    plon = p.get("lon")
+                    if plat is None or plon is None:
+                        continue
+                    d = _haversine_m(plat, plon, hz.lat, hz.lon)
+                    if d < min_d:
+                        min_d = d
+                if min_d == float("inf"):
+                    continue
+                if min_d < 60:
+                    if min_d < 15:
+                        penalty, severity = 0.40, "high"
+                    elif min_d < 30:
+                        penalty, severity = 0.25, "medium"
+                    else:
+                        penalty, severity = 0.10, "low"
+                    hazard_penalty += penalty
+                    hazards_on_route.append({
+                        "id": str(getattr(hz, "id", "")),
+                        "type": getattr(hz, "type", "unknown"),
+                        "description": getattr(hz, "description", ""),
+                        "lat": float(hz.lat),
+                        "lon": float(hz.lon),
+                        "distance_m": round(min_d, 1),
+                        "severity": severity,
+                        "affected_profiles": list(getattr(hz, "affected_profiles", []) or []),
+                    })
+
+        hazard_penalty = min(hazard_penalty, 0.7)
+        scores["hazards"] = max(0.0, 1.0 - hazard_penalty)
+        # Reflect hazards in the "overall" score so a high-scoring route can't
+        # sit next to a relevant hazard and still claim the same number.
+        scores["overall"] = max(0.0, scores["overall"] - 0.4 * hazard_penalty)
+
         # GeoJSON LineString
         geojson = {
             "type": "Feature",
@@ -560,6 +624,23 @@ class RoutingEngine:
         }
 
         explanation = _generate_explanation(path_edges, profile)
+        if hazards_on_route:
+            sev_high = sum(1 for h in hazards_on_route if h["severity"] == "high")
+            sev_med = sum(1 for h in hazards_on_route if h["severity"] == "medium")
+            sev_low = sum(1 for h in hazards_on_route if h["severity"] == "low")
+            parts = []
+            if sev_high:
+                parts.append(f"{sev_high} within 15m")
+            if sev_med:
+                parts.append(f"{sev_med} within 30m")
+            if sev_low:
+                parts.append(f"{sev_low} within 60m")
+            explanation = (
+                explanation.rstrip(".")
+                + f". Heads up: {len(hazards_on_route)} reported hazard(s) for your profile lie close to this route "
+                + f"({', '.join(parts)}) — the score has been adjusted accordingly."
+            )
+
         directions = _generate_directions(path_coords, path_edges)
 
         # Clean up temporary nodes
@@ -578,4 +659,5 @@ class RoutingEngine:
             "directions": directions,
             "scores": {k: round(v, 3) for k, v in scores.items()},
             "geojson": geojson,
+            "hazards_on_route": hazards_on_route,
         }

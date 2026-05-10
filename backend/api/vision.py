@@ -15,12 +15,67 @@ class Hazard(BaseModel):
     severity: str  # "low", "medium", "high"
 
 class SidewalkAnalysisResult(BaseModel):
-    overall_score: int  # 0-100
+    # 0-100 where HIGHER = BETTER accessibility for a wheelchair user.
+    overall_score: int
     surface_type: str
     slope_estimate: str
     hazards: List[Hazard]
     wheelchair_accessible: bool
     explanation: str
+
+
+def _clamp_int(v: object, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(v)  # handles numeric strings too
+    except Exception:
+        return default
+    return max(lo, min(hi, n))
+
+
+def _normalize_severity(raw: object) -> str:
+    if not isinstance(raw, str):
+        return "medium"
+    s = raw.strip().lower()
+    if s in ("low", "l"):
+        return "low"
+    if s in ("high", "h", "severe", "critical"):
+        return "high"
+    return "medium"
+
+
+def _postprocess_result(result_dict: dict) -> dict:
+    """
+    Gemini can invert the score direction (treating 0 as best) unless we are explicit.
+    This normalizes fields and applies a small consistency check so users don't see
+    \"path looks clear\" paired with \"7/100\".
+    """
+    hazards = result_dict.get("hazards") or []
+    if isinstance(hazards, list):
+        for h in hazards:
+            if isinstance(h, dict):
+                h["severity"] = _normalize_severity(h.get("severity"))
+    else:
+        hazards = []
+        result_dict["hazards"] = hazards
+
+    score = _clamp_int(result_dict.get("overall_score"), 0, 100, 50)
+    wheelchair_ok = bool(result_dict.get("wheelchair_accessible"))
+
+    any_high = any(isinstance(h, dict) and h.get("severity") == "high" for h in hazards)
+    any_med = any(isinstance(h, dict) and h.get("severity") == "medium" for h in hazards)
+    any_low = any(isinstance(h, dict) and h.get("severity") == "low" for h in hazards)
+
+    # If the narrative says it's accessible (wheelchair_accessible true) and hazards are empty/low,
+    # a single-digit score is almost certainly inverted. Lift it to a reasonable range.
+    if wheelchair_ok and not any_high and score < 35:
+        score = 85 if (not hazards) else (75 if any_low and not any_med else 65)
+
+    # Conversely: if not wheelchair accessible and there is a high severity hazard, prevent overly high scores.
+    if (not wheelchair_ok) and any_high and score > 55:
+        score = 35
+
+    result_dict["overall_score"] = score
+    return result_dict
 
 @router.post("/analyze-sidewalk", response_model=SidewalkAnalysisResult)
 async def analyze_sidewalk(image: UploadFile = File(...)):
@@ -64,7 +119,14 @@ async def analyze_sidewalk(image: UploadFile = File(...)):
             "You are an expert ADA accessibility inspector. Analyze this image of a sidewalk, "
             "crosswalk, or building entrance. Look for physical barriers that would impact someone "
             "in a wheelchair or using a cane (e.g., steep slopes, broken concrete, missing curb ramps, "
-            "obstructions like e-scooters or construction). Provide a structured assessment."
+            "obstructions like e-scooters or construction).\n\n"
+            "SCORING RUBRIC (IMPORTANT):\n"
+            "- overall_score is an integer from 0 to 100 where HIGHER IS BETTER accessibility.\n"
+            "- 90-100: clear, smooth, wide path + curb ramps present; no meaningful barriers.\n"
+            "- 70-89: generally accessible, minor issues (small cracks, slight cross-slope, minor clutter).\n"
+            "- 40-69: usable but significant difficulty (narrow pinch points, uneven surface, ambiguous curb ramp).\n"
+            "- 0-39: not wheelchair accessible (steps, missing curb cut at crossing, severe blockage, unsafe slope).\n\n"
+            "Return ONLY the structured JSON matching the schema."
         )
 
         response = client.models.generate_content(
@@ -82,7 +144,7 @@ async def analyze_sidewalk(image: UploadFile = File(...)):
         
         # Parse the JSON string returned by Gemini into a dict
         result_dict = json.loads(response.text)
-        return result_dict
+        return _postprocess_result(result_dict)
         
     except Exception as e:
         print(f"Error in Gemini analysis: {e}")
