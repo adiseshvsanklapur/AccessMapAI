@@ -1,0 +1,10 @@
+{
+  "name": "accessmapai-root",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"cd backend && source venv/bin/activate && uvicorn main:app --reload\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

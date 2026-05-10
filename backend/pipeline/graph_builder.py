@@ -12,6 +12,9 @@ import math
 import networkx as nx
 from pathlib import Path
 from typing import Optional
+import os
+from dotenv import load_dotenv
+from supabase import create_client
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +136,23 @@ def build_pedestrian_graph(
     all_nodes = {}
     all_ways = []
 
-    for fname in [sidewalks_file, davis_sidewalks_file]:
-        fpath = data_dir / fname
-        if fpath.exists():
-            nodes, ways = _parse_osm_json(fpath)
-            all_nodes.update(nodes)
-            all_ways.extend(ways)
-            print(f"  Loaded {fname}: {len(nodes)} nodes, {len(ways)} ways")
+    # 1. Try Supabase first
+    sb_nodes = fetch_all_from_supabase("osm_nodes")
+    sb_ways = fetch_all_from_supabase("osm_ways")
+    
+    if sb_nodes and sb_ways:
+        all_nodes = {n["id"]: n for n in sb_nodes}
+        all_ways = sb_ways
+        print(f"  Loaded from Supabase: {len(all_nodes)} nodes, {len(all_ways)} ways")
+    else:
+        # 2. Fall back to local JSON
+        for fname in [sidewalks_file, davis_sidewalks_file]:
+            fpath = data_dir / fname
+            if fpath.exists():
+                nodes, ways = _parse_osm_json(fpath)
+                all_nodes.update(nodes)
+                all_ways.extend(ways)
+                print(f"  Loaded {fname}: {len(nodes)} nodes, {len(ways)} ways")
 
     # Deduplicate ways by ID
     seen_way_ids = set()
@@ -181,6 +194,13 @@ def build_pedestrian_graph(
             except ValueError:
                 pass
 
+        # Identify explicit sidewalks
+        is_sidewalk = (
+            tags.get("footway") == "sidewalk" or
+            tags.get("highway") == "pedestrian" or
+            tags.get("sidewalk") in ["both", "left", "right", "yes"]
+        )
+
         # Parse incline (percentage)
         incline = None
         if incline_str:
@@ -212,6 +232,7 @@ def build_pedestrian_graph(
                 surface_score=surface_score,
                 highway_score=highway_score,
                 has_stairs=has_stairs,
+                is_sidewalk=is_sidewalk,
                 width=width,
                 incline=incline,
                 way_id=way["id"],
@@ -235,11 +256,49 @@ def build_pedestrian_graph(
     return G
 
 
+def fetch_all_from_supabase(table_name: str) -> list[dict]:
+    load_dotenv()
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        return []
+        
+    try:
+        client = create_client(url, key)
+        data = []
+        offset = 0
+        limit = 1000
+        while True:
+            res = client.table(table_name).select("*").range(offset, offset + limit - 1).execute()
+            data.extend(res.data)
+            if len(res.data) < limit:
+                break
+            offset += limit
+        return data
+    except Exception as e:
+        print(f"  [Warning] Failed to fetch {table_name} from Supabase: {e}")
+        return []
+
 # ---------------------------------------------------------------------------
 # Load auxiliary spatial data (buildings, roads, etc.)
 # ---------------------------------------------------------------------------
 def load_buildings(data_dir: Path) -> list[dict]:
     """Load building centroids from OSM buildings data."""
+    # 1. Try Supabase first
+    sb_data = fetch_all_from_supabase("osm_buildings")
+    if sb_data:
+        buildings = []
+        for row in sb_data:
+            buildings.append({
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "tags": row["tags"],
+                "id": row["id"],
+            })
+        print(f"  Loaded {len(buildings)} buildings from Supabase")
+        return buildings
+
+    # 2. Fall back to local JSON
     fpath = data_dir / "buildings.json"
     if not fpath.exists():
         return []
@@ -259,22 +318,65 @@ def load_buildings(data_dir: Path) -> list[dict]:
                 "id": el["id"],
             })
 
-    print(f"  Loaded {len(buildings)} buildings")
+    print(f"  Loaded {len(buildings)} buildings from local file")
     return buildings
 
 
 def load_roads(data_dir: Path) -> tuple[dict, list]:
     """Load roads for noise estimation."""
+    # 1. Try Supabase first
+    sb_nodes = fetch_all_from_supabase("osm_nodes") # Note: we might have too many nodes if we just fetch all
+    sb_roads = fetch_all_from_supabase("osm_roads")
+    
+    if sb_roads:
+        # To avoid pulling all 20k nodes just for roads if we don't have to,
+        # wait, the roads function expects a dict of nodes.
+        nodes = {n["id"]: n for n in sb_nodes} if sb_nodes else {}
+        ways = []
+        for r in sb_roads:
+            ways.append({
+                "id": r["id"],
+                "tags": r["tags"],
+                "nodes": r["nodes"]
+            })
+        print(f"  Loaded {len(ways)} roads from Supabase")
+        return nodes, ways
+
+    # 2. Fall back
     fpath = data_dir / "roads.json"
     if not fpath.exists():
         return {}, []
     nodes, ways = _parse_osm_json(fpath)
-    print(f"  Loaded {len(ways)} roads")
+    print(f"  Loaded {len(ways)} roads from local file")
     return nodes, ways
 
 
 def load_accessibility_features(data_dir: Path) -> list[dict]:
     """Load accessibility features (kerbs, crossings, wheelchair tags)."""
+    # 1. Try Supabase first
+    load_dotenv()
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if url and key:
+        try:
+            client = create_client(url, key)
+            res = client.table("accessibility_features").select("*").execute()
+            if res.data:
+                features = []
+                for row in res.data:
+                    features.append({
+                        "id": row["id"],
+                        "lat": row["lat"],
+                        "lon": row["lon"],
+                        "tags": row["tags"],
+                        "type": row["element_type"],
+                    })
+                print(f"  Loaded {len(features)} accessibility features from Supabase")
+                return features
+        except Exception as e:
+            print(f"  [Warning] Failed to load from Supabase ({e}). Falling back to local JSON...")
+
+    # 2. Fall back to local JSON
     fpath = data_dir / "accessibility_features.json"
     if not fpath.exists():
         return []
@@ -302,12 +404,26 @@ def load_accessibility_features(data_dir: Path) -> list[dict]:
                 "type": "way",
             })
 
-    print(f"  Loaded {len(features)} accessibility features")
+    print(f"  Loaded {len(features)} accessibility features from local file")
     return features
 
 
 def load_lighting(data_dir: Path) -> list[dict]:
     """Load street lighting data."""
+    # 1. Try Supabase first
+    sb_data = fetch_all_from_supabase("osm_lighting")
+    if sb_data:
+        lights = []
+        for row in sb_data:
+            lights.append({
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "id": row["id"],
+            })
+        print(f"  Loaded {len(lights)} lighting features from Supabase")
+        return lights
+
+    # 2. Fall back
     fpath = data_dir / "davis_lighting.json"
     if not fpath.exists():
         return []
@@ -332,5 +448,5 @@ def load_lighting(data_dir: Path) -> list[dict]:
                 "id": el["id"],
             })
 
-    print(f"  Loaded {len(lights)} lighting features")
+    print(f"  Loaded {len(lights)} lighting features from local file")
     return lights

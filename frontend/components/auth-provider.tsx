@@ -55,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             email: user.email ?? null,
             full_name: null,
             routing_profile: "wheelchair",
+            routing_profiles: ["wheelchair"],
             mobility_notes: null,
             sensory_notes: null,
             additional_needs: null,

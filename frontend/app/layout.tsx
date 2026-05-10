@@ -31,10 +31,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body
-        suppressHydrationWarning
         className={`${plusJakarta.variable} ${jetbrainsMono.variable} font-sans text-[15px] leading-[1.55] tracking-[-0.01em] antialiased`}
+        suppressHydrationWarning
       >
         <AuthProvider>{children}</AuthProvider>
       </body>

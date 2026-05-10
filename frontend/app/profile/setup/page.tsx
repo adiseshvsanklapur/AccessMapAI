@@ -8,16 +8,16 @@ import type { RoutingProfileId } from "@/lib/profile-types";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 
 export default function ProfileSetupPage() {
   const router = useRouter();
   const { configured, ready, user, profile, refreshProfile, mergeLocalProfile } = useAuth();
   const [fullName, setFullName] = useState("");
-  const [routingProfile, setRoutingProfile] = useState<RoutingProfileId>("wheelchair");
+  const [routingProfiles, setRoutingProfiles] = useState<RoutingProfileId[]>(["wheelchair"]);
   const [mobilityNotes, setMobilityNotes] = useState("");
   const [sensoryNotes, setSensoryNotes] = useState("");
   const [additionalNeeds, setAdditionalNeeds] = useState("");
@@ -49,7 +49,7 @@ export default function ProfileSetupPage() {
     if (!ready || !user) return;
     if (profile) {
       setFullName(profile.full_name ?? "");
-      setRoutingProfile(profile.routing_profile);
+      setRoutingProfiles(profile.routing_profiles?.length ? profile.routing_profiles : [profile.routing_profile]);
       setMobilityNotes(profile.mobility_notes ?? "");
       setSensoryNotes(profile.sensory_notes ?? "");
       setAdditionalNeeds(profile.additional_needs ?? "");
@@ -84,7 +84,8 @@ export default function ProfileSetupPage() {
     try {
       await postProfile({
         full_name: fullName.trim() || null,
-        routing_profile: routingProfile,
+        routing_profile: routingProfiles[0] ?? "wheelchair",
+        routing_profiles: routingProfiles,
         mobility_notes: mobilityNotes.trim() || null,
         sensory_notes: sensoryNotes.trim() || null,
         additional_needs: additionalNeeds.trim() || null,
@@ -93,7 +94,8 @@ export default function ProfileSetupPage() {
       mergeLocalProfile({
         email: user.email ?? null,
         full_name: fullName.trim() || null,
-        routing_profile: routingProfile,
+        routing_profile: routingProfiles[0] ?? "wheelchair",
+        routing_profiles: routingProfiles,
         mobility_notes: mobilityNotes.trim() || null,
         sensory_notes: sensoryNotes.trim() || null,
         additional_needs: additionalNeeds.trim() || null,
@@ -121,12 +123,14 @@ export default function ProfileSetupPage() {
     setSkipping(true);
     try {
       await postProfile({
-        routing_profile: routingProfile,
+        routing_profile: routingProfiles[0] ?? "wheelchair",
+        routing_profiles: routingProfiles,
         onboarding_completed: true,
       });
       mergeLocalProfile({
         email: user.email ?? null,
-        routing_profile: routingProfile,
+        routing_profile: routingProfiles[0] ?? "wheelchair",
+        routing_profiles: routingProfiles,
         onboarding_completed: true,
       });
       void refreshProfile().catch(() => {});
@@ -181,24 +185,32 @@ export default function ProfileSetupPage() {
               </div>
 
               <div className="space-y-3">
-                <Label>Primary routing profile</Label>
+                <Label>Routing profiles</Label>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  Pick the closest match; the map uses this to optimize paths for you.
+                  Pick one or more profiles; the map will use all selected preferences.
                 </p>
-                <RadioGroup
-                  value={routingProfile}
-                  onValueChange={(v) => setRoutingProfile(v as RoutingProfileId)}
-                  className="gap-2"
-                >
+                <div className="space-y-2">
                   {ACCESS_PROFILE_OPTIONS.map(({ value, title, description }) => {
                     const id = `setup-${value}`;
+                    const checked = routingProfiles.includes(value);
                     return (
                       <Label
                         key={value}
                         htmlFor={id}
                         className="flex cursor-pointer items-start gap-3 rounded-xl border border-border/60 bg-card px-3 py-2.5 hover:bg-muted/40"
                       >
-                        <RadioGroupItem value={value} id={id} className="mt-1 shrink-0" />
+                        <Checkbox
+                          id={id}
+                          checked={checked}
+                          onCheckedChange={(next) => {
+                            if (next === true) {
+                              setRoutingProfiles((prev) => (prev.includes(value) ? prev : [...prev, value]));
+                            } else {
+                              setRoutingProfiles((prev) => (prev.length > 1 ? prev.filter((p) => p !== value) : prev));
+                            }
+                          }}
+                          className="mt-1 shrink-0"
+                        />
                         <div>
                           <span className="font-medium text-sm">{title}</span>
                           <p className="text-muted-foreground text-xs">{description}</p>
@@ -206,7 +218,7 @@ export default function ProfileSetupPage() {
                       </Label>
                     );
                   })}
-                </RadioGroup>
+                </div>
               </div>
 
               <div className="space-y-2">

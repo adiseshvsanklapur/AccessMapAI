@@ -34,7 +34,7 @@ export interface RouteGeoJSON {
     coordinates: [number, number][];
   };
   properties: {
-    profile: string;
+    profiles: string[];
     distance_m: number;
     scores: RouteScores;
   };
@@ -50,7 +50,7 @@ export interface DirectionStep {
 export interface RouteResponse {
   origin: { lat: number; lon: number };
   destination: { lat: number; lon: number };
-  profile: string;
+  profiles: string[];
   profile_display: string;
   distance_m: number;
   path: RoutePathPoint[];
@@ -98,6 +98,24 @@ export interface Hazard {
   type: string;
   description: string;
   severity: "low" | "medium" | "high";
+}
+
+export interface HazardReport {
+  id: string;
+  lat: number;
+  lon: number;
+  type: string;
+  description: string;
+  affected_profiles: string[];
+  timestamp: string;
+}
+
+export interface HazardPayload {
+  lat: number;
+  lon: number;
+  type: string;
+  description: string;
+  affected_profiles: string[];
 }
 
 export interface SidewalkAnalysisResult {
@@ -155,11 +173,18 @@ export async function fetchRoute(
   originLon: number,
   destLat: number,
   destLon: number,
-  profile: string = "default",
+  profiles: string[] = ["default"],
 ): Promise<RouteResponse> {
-  return apiFetch<RouteResponse>(
-    `/route?origin_lat=${originLat}&origin_lon=${originLon}&dest_lat=${destLat}&dest_lon=${destLon}&profile=${profile}`,
-  );
+  return apiFetch<RouteResponse>("/route", {
+    method: "POST",
+    body: JSON.stringify({
+      origin_lat: originLat,
+      origin_lon: originLon,
+      dest_lat: destLat,
+      dest_lon: destLon,
+      profiles: profiles,
+    }),
+  });
 }
 
 export async function fetchHeatmap(
@@ -197,6 +222,25 @@ export async function fetchAccessibilityPoints(
     `/accessibility-points?north=${b.north}&south=${b.south}&east=${b.east}&west=${b.west}`,
   );
   return res.points;
+}
+
+export async function fetchHazards(): Promise<HazardReport[]> {
+  return apiFetch<HazardReport[]>("/hazards");
+}
+
+export async function reportHazard(payload: HazardPayload): Promise<HazardReport> {
+  const res = await fetch(`${API_BASE}/hazards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to report hazard");
+  }
+
+  return res.json();
 }
 
 export async function analyzeSidewalkImage(file: File): Promise<SidewalkAnalysisResult> {
