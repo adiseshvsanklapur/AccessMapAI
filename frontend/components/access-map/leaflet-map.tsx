@@ -1,87 +1,47 @@
 "use client";
 
 /**
- * Leaflet map wired to the AccessMap AI backend.
+ * Mapbox GL map wired to the AccessMap AI backend.
+ * Drop-in replacement for the Leaflet implementation.
  * Renders real route GeoJSON, heatmap data, transit stops,
  * and supports click-to-set origin/destination.
  */
-import "leaflet/dist/leaflet.css";
-import "./map-leaflet.css";
-import type { LatLngExpression, LeafletMouseEvent } from "leaflet";
-import { useEffect, useMemo, useState } from "react";
-import {
-  CircleMarker,
-  MapContainer,
+import "mapbox-gl/dist/mapbox-gl.css";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Map, {
+  Layer,
   Marker,
-  Pane,
-  Polyline,
-  TileLayer,
-  Tooltip,
-  useMap,
-  useMapEvents,
-} from "react-leaflet";
-import L from "leaflet";
-
+  NavigationControl,
+  Source,
+} from "react-map-gl/mapbox";
+import type { MapMouseEvent, MapRef } from "react-map-gl/mapbox";
 import type { AccessibilityMapProps } from "./types";
 
-const TILE_CACHE_REVISION = "v2026-voyager-1";
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!;
 const BRAND = "#5c32a8";
 
 /** UC Davis center */
-const UC_DAVIS_CENTER = [38.5382, -121.7617] as LatLngExpression;
+const UC_DAVIS_CENTER = { longitude: -121.7617, latitude: 38.5382 };
 
-const ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright" rel="noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" rel="noreferrer">CARTO</a>';
-
-function cartoRaster(path: string) {
-  return `https://{s}.basemaps.cartocdn.com${path}?_${TILE_CACHE_REVISION}`;
-}
-
-const TILE_VOYAGER = cartoRaster(`/rastertiles/voyager/{z}/{x}/{y}.png`);
-const TILE_DARK_BASE = cartoRaster(`/dark_nolabels/{z}/{x}/{y}.png`);
-const TILE_DARK_LABELS = cartoRaster(`/dark_only_labels/{z}/{x}/{y}.png`);
-
-// Custom marker icons
-const originIcon = L.divIcon({
-  className: "accessmap-marker-origin",
-  html: '<div style="width:20px;height:20px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>',
-  iconSize: [20, 20],
-  iconAnchor: [10, 10],
-});
-
-const destIcon = L.divIcon({
-  className: "accessmap-marker-dest",
-  html: '<div style="width:20px;height:20px;border-radius:50%;background:#ef4444;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>',
-  iconSize: [20, 20],
-  iconAnchor: [10, 10],
-});
-
-// ---------------------------------------------------------------------------
-// Heatmap color scale
-// ---------------------------------------------------------------------------
-function scoreToColor(value: number): string {
-  // Crowd/traffic heatmap: high value = red (busy), low value = green (calm)
-  if (value > 0.66) return `rgba(239, 68, 68, ${0.4 + value * 0.4})`;   // red — heavy traffic
-  if (value > 0.33) return `rgba(250, 204, 21, ${0.3 + value * 0.4})`;  // yellow — moderate
-  return `rgba(34, 197, 94, ${0.3 + value * 0.3})`;                      // green — calm
-}
 // Accessibility point category colors
 const CATEGORY_COLORS: Record<string, string> = {
-  crossing: "#3b82f6",         // blue
-  kerb_lowered: "#10b981",     // green
-  kerb_raised: "#ef4444",      // red
-  tactile_paving: "#8b5cf6",   // purple
-  wheelchair_yes: "#10b981",   // green
-  wheelchair_limited: "#f59e0b", // amber
-  wheelchair_no: "#ef4444",    // red
+  crossing: "#3b82f6",
+  kerb_lowered: "#10b981",
+  kerb_raised: "#ef4444",
+  tactile_paving: "#8b5cf6",
+  wheelchair_yes: "#10b981",
+  wheelchair_limited: "#f59e0b",
+  wheelchair_no: "#ef4444",
 };
 
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
+function scoreToColor(value: number): string {
+  if (value > 0.66) return `rgba(239, 68, 68, ${0.4 + value * 0.4})`;
+  if (value > 0.33) return `rgba(250, 204, 21, ${0.3 + value * 0.4})`;
+  return `rgba(34, 197, 94, ${0.3 + value * 0.3})`;
+}
+
 function useDocumentDarkClass() {
   const [dark, setDark] = useState(false);
-
   useEffect(() => {
     const el = document.documentElement;
     const read = () => setDark(el.classList.contains("dark"));
@@ -90,34 +50,7 @@ function useDocumentDarkClass() {
     obs.observe(el, { attributes: true, attributeFilter: ["class"] });
     return () => obs.disconnect();
   }, []);
-
   return dark;
-}
-
-/** Fit map bounds to route when it changes */
-function FitToRoute({ routeCoords }: { routeCoords?: [number, number][] }) {
-  const map = useMap();
-
-  useEffect(() => {
-    if (routeCoords && routeCoords.length > 1) {
-      const bounds = L.latLngBounds(
-        routeCoords.map(([lon, lat]) => [lat, lon] as [number, number]),
-      );
-      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
-    }
-  }, [routeCoords, map]);
-
-  return null;
-}
-
-/** Handle click events on map */
-function MapClickHandler({ onClick }: { onClick?: (lat: number, lon: number) => void }) {
-  useMapEvents({
-    click(e: LeafletMouseEvent) {
-      onClick?.(e.latlng.lat, e.latlng.lng);
-    },
-  });
-  return null;
 }
 
 export function AccessibilityLeafletMap({
@@ -126,234 +59,263 @@ export function AccessibilityLeafletMap({
   heatmapPoints,
   transitStops,
   accessibilityPoints,
-  hazards,
-  draftHazardLatLon,
   originLatLon,
   destLatLon,
   onMapClick,
 }: AccessibilityMapProps) {
   const isDark = useDocumentDarkClass();
+  const mapRef = useRef<MapRef>(null);
 
-  // Convert GeoJSON coordinates to Leaflet LatLngExpression
-  const routePositions = useMemo<LatLngExpression[]>(() => {
-    if (!routeGeoJSON?.geometry?.coordinates) return [];
-    return routeGeoJSON.geometry.coordinates.map(
-      ([lon, lat]) => [lat, lon] as LatLngExpression,
+  const [viewState, setViewState] = useState({
+    ...UC_DAVIS_CENTER,
+    zoom: 15,
+  });
+
+  // Fit bounds when route changes
+  useEffect(() => {
+    const coords = routeGeoJSON?.geometry?.coordinates;
+    if (!coords || coords.length < 2 || !mapRef.current) return;
+
+    const lngs = coords.map(([lon]: number[]) => lon);
+    const lats = coords.map(([, lat]: number[]) => lat);
+
+    mapRef.current.fitBounds(
+      [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ],
+      { padding: 60, maxZoom: 17, duration: 800 }
     );
   }, [routeGeoJSON]);
 
+  const handleClick = useCallback(
+    (e: MapMouseEvent) => {
+      onMapClick?.(e.lngLat.lat, e.lngLat.lng);
+    },
+    [onMapClick]
+  );
+
+  // Build route GeoJSON for the Source
+  const routeSourceData = useMemo(() => {
+    if (!routeGeoJSON?.geometry?.coordinates) return null;
+    return {
+      type: "Feature" as const,
+      properties: {},
+      geometry: routeGeoJSON.geometry,
+    };
+  }, [routeGeoJSON]);
+
+  // Build heatmap GeoJSON
+  const heatmapSourceData = useMemo(() => {
+    if (!heatmapPoints || heatmapPoints.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: heatmapPoints.map((pt) => ({
+        type: "Feature" as const,
+        properties: {
+          value: pt.value,
+          color: scoreToColor(pt.value),
+        },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [pt.lon, pt.lat],
+        },
+      })),
+    };
+  }, [heatmapPoints]);
+
+  // Build transit stops GeoJSON
+  const transitSourceData = useMemo(() => {
+    if (!transitStops || transitStops.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: transitStops.map((stop) => ({
+        type: "Feature" as const,
+        properties: {
+          name: stop.stop_name,
+          wheelchair: stop.wheelchair_boarding,
+          color:
+            stop.wheelchair_boarding === "1" ? "#10b981" : "#f59e0b",
+        },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [stop.lon, stop.lat],
+        },
+      })),
+    };
+  }, [transitStops]);
+
+  // Build accessibility points GeoJSON
+  const accessibilitySourceData = useMemo(() => {
+    if (!accessibilityPoints || accessibilityPoints.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: accessibilityPoints.map((pt) => ({
+        type: "Feature" as const,
+        properties: {
+          label: pt.label,
+          color: CATEGORY_COLORS[pt.category] ?? "#6b7280",
+        },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [pt.lon, pt.lat],
+        },
+      })),
+    };
+  }, [accessibilityPoints]);
+
+  const mapStyle = isDark
+    ? "mapbox://styles/mapbox/dark-v11"
+    : "mapbox://styles/mapbox/streets-v12";
+
   return (
-    <MapContainer
-      key={`${TILE_CACHE_REVISION}-${isDark ? "dark" : "light"}`}
-      attributionControl
-      zoomControl
-      dragging
-      scrollWheelZoom
+    <Map
+      ref={mapRef}
+      {...viewState}
+      onMove={(evt) => setViewState(evt.viewState)}
+      mapStyle={mapStyle}
+      mapboxAccessToken={MAPBOX_TOKEN}
+      onClick={handleClick}
       doubleClickZoom={false}
-      boxZoom
-      keyboard
-      center={UC_DAVIS_CENTER}
-      zoom={15}
-      className="accessmap-leaflet isolate z-0 h-full min-h-[22rem] w-full"
-      style={{ isolation: "isolate" }}
+      style={{ width: "100%", height: "100%", minHeight: "22rem" }}
+      reuseMaps
     >
-      {isDark ? (
-        <>
-          <TileLayer
-            key="dark-base"
-            url={TILE_DARK_BASE}
-            maxZoom={20}
-            maxNativeZoom={18}
-            subdomains={["a", "b", "c", "d"]}
+      <NavigationControl position="top-right" />
+
+      {/* Route line */}
+      {layers.route && routeSourceData && (
+        <Source id="route" type="geojson" data={routeSourceData}>
+          {/* White outline */}
+          <Layer
+            id="route-outline"
+            type="line"
+            paint={{
+              "line-color": "#ffffff",
+              "line-width": 13,
+              "line-opacity": 0.52,
+            }}
+            layout={{
+              "line-cap": "round",
+              "line-join": "round",
+            }}
           />
-          <TileLayer
-            key="dark-labels"
-            url={TILE_DARK_LABELS}
-            attribution={ATTRIBUTION}
-            maxZoom={20}
-            maxNativeZoom={18}
-            subdomains={["a", "b", "c", "d"]}
+          {/* Main route */}
+          <Layer
+            id="route-main"
+            type="line"
+            paint={{
+              "line-color": BRAND,
+              "line-width": 6,
+              "line-opacity": 1,
+            }}
+            layout={{
+              "line-cap": "round",
+              "line-join": "round",
+            }}
           />
-        </>
-      ) : (
-        <TileLayer
-          key="voyager"
-          url={TILE_VOYAGER}
-          attribution={ATTRIBUTION}
-          maxZoom={20}
-          maxNativeZoom={19}
-          subdomains={["a", "b", "c", "d"]}
-        />
+          {/* Animated dash */}
+          <Layer
+            id="route-dash"
+            type="line"
+            paint={{
+              "line-color": "#f5f0ff",
+              "line-width": 2,
+              "line-opacity": 0.95,
+              "line-dasharray": [1, 16],
+            }}
+            layout={{
+              "line-cap": "round",
+            }}
+          />
+        </Source>
       )}
 
-      {/* Click handler for setting origin/destination */}
-      <MapClickHandler onClick={onMapClick} />
-
-      {/* Fit bounds to route */}
-      <FitToRoute
-        routeCoords={routeGeoJSON?.geometry?.coordinates as [number, number][] | undefined}
-      />
-
-      {/* Route polyline */}
-      {layers.route && routePositions.length > 1 && (
-        <Pane name="route" style={{ zIndex: 450 }}>
-          {/* White outline for contrast */}
-          <Polyline
-            positions={routePositions}
-            pathOptions={{
-              color: "#ffffff",
-              weight: 13,
-              opacity: 0.52,
-              lineCap: "round",
-              lineJoin: "round",
+      {/* Heatmap */}
+      {layers.heatmap && heatmapSourceData && (
+        <Source id="heatmap" type="geojson" data={heatmapSourceData}>
+          <Layer
+            id="heatmap-circles"
+            type="circle"
+            paint={{
+              "circle-radius": 4,
+              "circle-color": ["get", "color"],
+              "circle-opacity": 0.7,
             }}
           />
-          {/* Main route line */}
-          <Polyline
-            positions={routePositions}
-            pathOptions={{
-              color: BRAND,
-              weight: 6,
-              opacity: 1,
-              lineCap: "round",
-              lineJoin: "round",
-            }}
-          />
-          {/* Animated dash overlay */}
-          <Polyline
-            positions={routePositions}
-            pathOptions={{
-              color: "#f5f0ff",
-              weight: 2,
-              opacity: 0.95,
-              dashArray: "1 16",
-              lineCap: "round",
-            }}
-          />
-        </Pane>
-      )}
-
-      {/* Heatmap layer */}
-      {layers.heatmap && heatmapPoints && heatmapPoints.length > 0 && (
-        <Pane name="heatmap" style={{ zIndex: 420 }}>
-          {heatmapPoints.map((pt, idx) => (
-            <CircleMarker
-              key={`heat-${idx}`}
-              center={[pt.lat, pt.lon]}
-              radius={4}
-              pathOptions={{
-                color: "transparent",
-                fillColor: scoreToColor(pt.value),
-                fillOpacity: 0.7,
-                weight: 0,
-              }}
-            />
-          ))}
-        </Pane>
+        </Source>
       )}
 
       {/* Transit stops */}
-      {layers.obstacles && transitStops && transitStops.length > 0 && (
-        <Pane name="transit" style={{ zIndex: 440 }}>
-          {transitStops.map((stop) => (
-            <CircleMarker
-              key={stop.stop_id}
-              center={[stop.lat, stop.lon]}
-              radius={5}
-              pathOptions={{
-                color: "#ffffff",
-                fillColor: stop.wheelchair_boarding === "1" ? "#10b981" : "#f59e0b",
-                fillOpacity: 0.9,
-                weight: 1.5,
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -6]}>
-                <span className="text-xs font-medium">{stop.stop_name}</span>
-                {stop.wheelchair_boarding === "1" && (
-                  <span className="ml-1 text-green-600">♿</span>
-                )}
-              </Tooltip>
-            </CircleMarker>
-          ))}
-        </Pane>
+      {layers.obstacles && transitSourceData && (
+        <Source id="transit" type="geojson" data={transitSourceData}>
+          <Layer
+            id="transit-circles"
+            type="circle"
+            paint={{
+              "circle-radius": 5,
+              "circle-color": ["get", "color"],
+              "circle-stroke-color": "#ffffff",
+              "circle-stroke-width": 1.5,
+              "circle-opacity": 0.9,
+            }}
+          />
+        </Source>
       )}
 
       {/* Accessibility infrastructure points */}
-      {layers.accessibilityPoints && accessibilityPoints && accessibilityPoints.length > 0 && (
-        <Pane name="accessibility-pts" style={{ zIndex: 435 }}>
-          {accessibilityPoints.map((pt, idx) => (
-            <CircleMarker
-              key={`acc-${idx}`}
-              center={[pt.lat, pt.lon]}
-              radius={5}
-              pathOptions={{
-                color: "#ffffff",
-                fillColor: CATEGORY_COLORS[pt.category] ?? "#6b7280",
-                fillOpacity: 0.85,
-                weight: 1.5,
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -6]}>
-                <span className="text-xs font-medium">{pt.label}</span>
-              </Tooltip>
-            </CircleMarker>
-          ))}
-        </Pane>
+      {layers.accessibilityPoints && accessibilitySourceData && (
+        <Source
+          id="accessibility-pts"
+          type="geojson"
+          data={accessibilitySourceData}
+        >
+          <Layer
+            id="accessibility-circles"
+            type="circle"
+            paint={{
+              "circle-radius": 5,
+              "circle-color": ["get", "color"],
+              "circle-stroke-color": "#ffffff",
+              "circle-stroke-width": 1.5,
+              "circle-opacity": 0.85,
+            }}
+          />
+        </Source>
       )}
 
       {/* Origin marker */}
       {originLatLon && (
-        <Marker position={originLatLon} icon={originIcon}>
-          <Tooltip direction="top" offset={[0, -12]} permanent>
-            <span className="font-semibold text-xs">Start</span>
-          </Tooltip>
+        <Marker latitude={originLatLon[0]} longitude={originLatLon[1]}>
+          <div
+            style={{
+              width: 20,
+              height: 20,
+              borderRadius: "50%",
+              background: "#10b981",
+              border: "3px solid #fff",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            }}
+            title="Start"
+          />
         </Marker>
       )}
 
       {/* Destination marker */}
       {destLatLon && (
-        <Marker position={destLatLon} icon={destIcon}>
-          <Tooltip direction="top" offset={[0, -12]} permanent>
-            <span className="font-semibold text-xs">End</span>
-          </Tooltip>
+        <Marker latitude={destLatLon[0]} longitude={destLatLon[1]}>
+          <div
+            style={{
+              width: 20,
+              height: 20,
+              borderRadius: "50%",
+              background: "#ef4444",
+              border: "3px solid #fff",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            }}
+            title="End"
+          />
         </Marker>
       )}
-
-      {/* Hazards Layer */}
-      {layers.hazards && hazards && hazards.length > 0 && (
-        <Pane name="hazards" style={{ zIndex: 450 }}>
-          {hazards.map((hazard) => (
-            <CircleMarker
-              key={hazard.id}
-              center={[hazard.lat, hazard.lon]}
-              radius={7}
-              pathOptions={{
-                color: "#ffffff",
-                fillColor: "#ef4444", // Red for hazard
-                fillOpacity: 0.9,
-                weight: 2,
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -8]}>
-                <div className="flex flex-col gap-1 max-w-[200px]">
-                  <span className="font-bold text-xs">{hazard.type}</span>
-                  <span className="text-[10px] text-muted-foreground whitespace-normal">{hazard.description}</span>
-                  <span className="text-[10px] font-mono text-destructive">Affects: {hazard.affected_profiles.join(", ")}</span>
-                </div>
-              </Tooltip>
-            </CircleMarker>
-          ))}
-        </Pane>
-      )}
-
-      {/* Draft Hazard Marker */}
-      {draftHazardLatLon && (
-        <Marker position={draftHazardLatLon}>
-          <Tooltip direction="top" permanent>
-            <span className="font-semibold text-xs text-destructive">New Hazard</span>
-          </Tooltip>
-        </Marker>
-      )}
-    </MapContainer>
+    </Map>
   );
 }
