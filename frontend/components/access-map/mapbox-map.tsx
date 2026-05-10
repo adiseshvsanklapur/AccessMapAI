@@ -329,7 +329,7 @@ export function AccessibilityMapboxMap({
           <Layer
             id="heatmap-circles"
             type="circle"
-            paint={{ "circle-radius": 4, "circle-color": ["get", "color"], "circle-opacity": 0.7 }}
+            paint={{ "circle-radius": 2.6, "circle-color": ["get", "color"], "circle-opacity": 0.33 }}
           />
         </Source>
       )}

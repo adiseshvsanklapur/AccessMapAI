@@ -111,7 +111,13 @@ export function AccessDashboard() {
 
   // Fetch route when origin, destination, or profile changes
   useEffect(() => {
-    if (!origin || !destination || selectedProfiles.length === 0) return;
+    if (!origin || !destination) return;
+    if (selectedProfiles.length === 0) {
+      setRouteData(null);
+      setLoading(false);
+      setError("Select at least one disability profile to compute a route.");
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -456,6 +462,11 @@ export function AccessDashboard() {
                   );
                 })}
               </div>
+              {selectedProfiles.length === 0 && (
+                <p className="mt-2 text-amber-400 text-xs">
+                  Select at least one profile to generate route analysis and directions.
+                </p>
+              )}
               <Separator className="my-4" />
               <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-3.5 font-mono text-muted-foreground text-[11px] leading-relaxed">
                 <span className="flex items-start gap-2 font-medium text-foreground">
