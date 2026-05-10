@@ -126,6 +126,8 @@ export function AccessibilityLeafletMap({
   heatmapPoints,
   transitStops,
   accessibilityPoints,
+  hazards,
+  draftHazardLatLon,
   originLatLon,
   destLatLon,
   onMapClick,
@@ -313,6 +315,42 @@ export function AccessibilityLeafletMap({
         <Marker position={destLatLon} icon={destIcon}>
           <Tooltip direction="top" offset={[0, -12]} permanent>
             <span className="font-semibold text-xs">End</span>
+          </Tooltip>
+        </Marker>
+      )}
+
+      {/* Hazards Layer */}
+      {layers.hazards && hazards && hazards.length > 0 && (
+        <Pane name="hazards" style={{ zIndex: 450 }}>
+          {hazards.map((hazard) => (
+            <CircleMarker
+              key={hazard.id}
+              center={[hazard.lat, hazard.lon]}
+              radius={7}
+              pathOptions={{
+                color: "#ffffff",
+                fillColor: "#ef4444", // Red for hazard
+                fillOpacity: 0.9,
+                weight: 2,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -8]}>
+                <div className="flex flex-col gap-1 max-w-[200px]">
+                  <span className="font-bold text-xs">{hazard.type}</span>
+                  <span className="text-[10px] text-muted-foreground whitespace-normal">{hazard.description}</span>
+                  <span className="text-[10px] font-mono text-destructive">Affects: {hazard.affected_profiles.join(", ")}</span>
+                </div>
+              </Tooltip>
+            </CircleMarker>
+          ))}
+        </Pane>
+      )}
+
+      {/* Draft Hazard Marker */}
+      {draftHazardLatLon && (
+        <Marker position={draftHazardLatLon}>
+          <Tooltip direction="top" permanent>
+            <span className="font-semibold text-xs text-destructive">New Hazard</span>
           </Tooltip>
         </Marker>
       )}

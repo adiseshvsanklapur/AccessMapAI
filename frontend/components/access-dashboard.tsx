@@ -20,7 +20,9 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   fetchRoute, fetchHeatmap, fetchTransit, fetchAccessibilityPoints, analyzeSidewalkImage,
+  fetchHazards, reportHazard,
   type RouteResponse, type HeatmapPoint, type TransitStop, type AccessibilityPoint, type SidewalkAnalysisResult,
+  type HazardReport, type HazardPayload,
 } from "@/lib/api";
 
 const PROFILES = [
@@ -33,7 +35,7 @@ const PROFILES = [
 
 type ProfileValue = (typeof PROFILES)[number]["value"];
 
-const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true, accessibilityPoints: true };
+const defaultLayers: MapLayerToggle = { route: true, heatmap: true, obstacles: true, dangerZones: true, accessibilityPoints: true, hazards: true };
 
 // Default locations: Memorial Union → Shields Library
 const DEFAULT_ORIGIN: [number, number] = [38.5422, -121.7494];
@@ -47,7 +49,7 @@ const SCORE_LABELS: Record<string, string> = {
 
 export function AccessDashboard() {
   const scoringId = useId();
-  const [profile, setProfile] = useState<ProfileValue>("wheelchair");
+  const [selectedProfiles, setSelectedProfiles] = useState<string[]>(["wheelchair"]);
   const [layers, setLayers] = useState<MapLayerToggle>(defaultLayers);
   const [consentGeminiTerms, setConsentGeminiTerms] = useState(true);
 
@@ -61,7 +63,15 @@ export function AccessDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendReady, setBackendReady] = useState(false);
-  const [clickMode, setClickMode] = useState<"origin" | "dest">("origin");
+  const [clickMode, setClickMode] = useState<"origin" | "dest" | "hazard">("origin");
+
+  // Hazard reporting state
+  const [activeHazards, setActiveHazards] = useState<HazardReport[]>([]);
+  const [draftHazardLatLon, setDraftHazardLatLon] = useState<[number, number] | null>(null);
+  const [hazardType, setHazardType] = useState("construction");
+  const [hazardDesc, setHazardDesc] = useState("");
+  const [hazardProfiles, setHazardProfiles] = useState<string[]>(["wheelchair", "blind"]);
+  const [submittingHazard, setSubmittingHazard] = useState(false);
 
   // Gemini state
   const [geminiFile, setGeminiFile] = useState<File | null>(null);
@@ -76,13 +86,13 @@ export function AccessDashboard() {
     setLoading(true);
     setError(null);
 
-    fetchRoute(origin[0], origin[1], destination[0], destination[1], profile)
+    fetchRoute(origin[0], origin[1], destination[0], destination[1], selectedProfiles)
       .then((data) => { if (!cancelled) { setRouteData(data); setBackendReady(true); } })
       .catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [origin, destination, profile]);
+  }, [origin, destination, selectedProfiles]);
 
   // Fetch heatmap & transit on mount
   useEffect(() => {
@@ -95,6 +105,9 @@ export function AccessDashboard() {
     fetchAccessibilityPoints()
       .then(setAccessibilityPoints)
       .catch(() => {});
+    fetchHazards()
+      .then(setActiveHazards)
+      .catch(() => {});
   }, []);
 
   // Map click handler — alternate between setting origin and destination
@@ -102,9 +115,11 @@ export function AccessDashboard() {
     if (clickMode === "origin") {
       setOrigin([lat, lon]);
       setClickMode("dest");
-    } else {
+    } else if (clickMode === "dest") {
       setDestination([lat, lon]);
       setClickMode("origin");
+    } else if (clickMode === "hazard") {
+      setDraftHazardLatLon([lat, lon]);
     }
   }, [clickMode]);
 
@@ -179,12 +194,26 @@ export function AccessDashboard() {
               <CardDescription>Select a profile to remap routing weights.</CardDescription>
             </CardHeader>
             <CardContent className="pt-0">
-              <RadioGroup value={profile} onValueChange={(v) => setProfile(v as ProfileValue)} className="gap-2.5">
+              <div className="flex flex-col gap-2.5">
                 {PROFILES.map(({ value, title, description, icon: Icon }) => {
                   const id = `profile-${value}`;
+                  const isSelected = selectedProfiles.includes(value);
                   return (
-                    <Label key={value} htmlFor={id} className="flex cursor-pointer items-start gap-3 rounded-2xl border border-border/60 bg-card/80 px-3.5 py-3 shadow-none transition-colors hover:border-primary/20 hover:bg-muted/45 dark:border-border dark:hover:border-primary/30">
-                      <RadioGroupItem value={value} id={id} className="mt-1 shrink-0" />
+                    <Label key={value} htmlFor={id} className={`flex cursor-pointer items-start gap-3 rounded-2xl border bg-card/80 px-3.5 py-3 shadow-none transition-colors ${isSelected ? "border-primary/50 bg-primary/5 dark:border-primary/50" : "border-border/60 hover:border-primary/20 hover:bg-muted/45 dark:border-border dark:hover:border-primary/30"}`}>
+                      <Checkbox 
+                        id={id} 
+                        className="mt-1 shrink-0" 
+                        checked={isSelected}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedProfiles([...selectedProfiles, value]);
+                          } else {
+                            if (selectedProfiles.length > 1) {
+                              setSelectedProfiles(selectedProfiles.filter((p) => p !== value));
+                            }
+                          }
+                        }}
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <Icon className="size-4 text-muted-foreground" aria-hidden />
@@ -195,7 +224,7 @@ export function AccessDashboard() {
                     </Label>
                   );
                 })}
-              </RadioGroup>
+              </div>
               <Separator className="my-4" />
               <div className="rounded-2xl border border-dashed border-border/70 bg-muted/40 p-3.5 font-mono text-muted-foreground text-[11px] leading-relaxed">
                 <span className="flex items-start gap-2 font-medium text-foreground">
@@ -337,6 +366,7 @@ export function AccessDashboard() {
                 <LayerRow checked={layers.obstacles} onCheckedChange={(c) => setLayers((s) => ({ ...s, obstacles: c }))} label="Transit stops" description="Unitrans bus stops" colorChip="border-amber-700 bg-amber-400" />
                 <LayerRow checked={layers.dangerZones} onCheckedChange={(c) => setLayers((s) => ({ ...s, dangerZones: c }))} label="Danger zones" description="High-noise crossings" colorChip="border-red-700 bg-red-400" />
                 <LayerRow checked={layers.accessibilityPoints} onCheckedChange={(c) => setLayers((s) => ({ ...s, accessibilityPoints: c }))} label="Accessibility points" description="Ramps, crossings, tactile paving" colorChip="border-blue-700 bg-blue-400" />
+                <LayerRow checked={layers.hazards} onCheckedChange={(c) => setLayers((s) => ({ ...s, hazards: c }))} label="User hazards" description="Crowdsourced obstacles" colorChip="border-red-700 bg-red-600" />
               </div>
             </div>
           </div>
@@ -347,6 +377,8 @@ export function AccessDashboard() {
             heatmapPoints={heatmapPoints}
             transitStops={transitStops}
             accessibilityPoints={accessibilityPoints}
+            hazards={activeHazards}
+            draftHazardLatLon={draftHazardLatLon}
             originLatLon={origin}
             destLatLon={destination}
             onMapClick={handleMapClick}
@@ -363,10 +395,98 @@ export function AccessDashboard() {
                 <LegendSwatch chip="border-purple-600 bg-purple-500/65" label="Tactile" />
                 <LegendSwatch chip="border-emerald-600 bg-emerald-500/65" label="Ramp" />
               </div>
-              <p className="text-muted-foreground text-xs md:text-sm">
-                Click map to set {clickMode === "origin" ? "origin" : "destination"} · Pan & zoom enabled
-              </p>
+              <div className="flex flex-col items-end gap-2 text-right">
+                <Button 
+                  variant={clickMode === "hazard" ? "destructive" : "secondary"} 
+                  size="sm" 
+                  onClick={() => setClickMode(clickMode === "hazard" ? "origin" : "hazard")}
+                >
+                  {clickMode === "hazard" ? "Cancel Hazard Report" : "Report Hazard ⚠️"}
+                </Button>
+                <p className="text-muted-foreground text-xs md:text-sm font-medium">
+                  {clickMode === "hazard" 
+                    ? "Click the map to drop a hazard pin" 
+                    : `Click map to set ${clickMode === "origin" ? "origin" : "destination"}`
+                  }
+                </p>
+              </div>
             </div>
+            
+            {/* Hazard Submission Form */}
+            {draftHazardLatLon && (
+              <div className="mt-4 p-4 border rounded-xl bg-destructive/5 animate-in fade-in slide-in-from-top-2">
+                <h4 className="font-semibold text-sm mb-3">Submit Accessibility Hazard</h4>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs">Hazard Type</Label>
+                    <select 
+                      className="w-full p-2 rounded-md border bg-background text-sm"
+                      value={hazardType}
+                      onChange={(e) => setHazardType(e.target.value)}
+                    >
+                      <option value="construction">Construction / Work Zone</option>
+                      <option value="scooter">Improperly Parked Scooter</option>
+                      <option value="broken_ramp">Broken or Missing Curb Ramp</option>
+                      <option value="surface_damage">Severe Surface Damage</option>
+                      <option value="other">Other Obstruction</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs">Description</Label>
+                    <input 
+                      type="text" 
+                      className="w-full p-2 rounded-md border bg-background text-sm"
+                      placeholder="e.g., Sidewalk completely blocked..."
+                      value={hazardDesc}
+                      onChange={(e) => setHazardDesc(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 space-y-2">
+                  <Label className="text-xs">Affects Profiles</Label>
+                  <div className="flex flex-wrap gap-3">
+                    {["wheelchair", "blind", "elderly", "neurodivergent", "temporary_injury"].map(p => (
+                      <label key={p} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox 
+                          checked={hazardProfiles.includes(p)} 
+                          onCheckedChange={(c) => {
+                            if (c) setHazardProfiles([...hazardProfiles, p]);
+                            else setHazardProfiles(hazardProfiles.filter(x => x !== p));
+                          }}
+                        />
+                        <span className="capitalize">{p.replace("_", " ")}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setDraftHazardLatLon(null)}>Cancel</Button>
+                  <Button size="sm" disabled={submittingHazard} onClick={async () => {
+                    setSubmittingHazard(true);
+                    try {
+                      await reportHazard({
+                        lat: draftHazardLatLon[0],
+                        lon: draftHazardLatLon[1],
+                        type: hazardType,
+                        description: hazardDesc,
+                        affected_profiles: hazardProfiles,
+                      });
+                      const updated = await fetchHazards();
+                      setActiveHazards(updated);
+                      setDraftHazardLatLon(null);
+                      setClickMode("origin");
+                      setHazardDesc("");
+                    } catch (e) {
+                      console.error(e);
+                    } finally {
+                      setSubmittingHazard(false);
+                    }
+                  }}>
+                    {submittingHazard ? "Submitting..." : "Submit Hazard"}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
       </main>

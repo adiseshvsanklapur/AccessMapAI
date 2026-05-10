@@ -30,6 +30,7 @@ class AccessibilityProfile:
     kerb_weight: float = 0.3
     crossing_signal_weight: float = 0.0  # preference for signalized crossings
     tactile_weight: float = 0.0          # preference for tactile paving routes
+    sidewalk_weight: float = 0.0         # preference for explicit sidewalks
 
     # Hard constraints
     avoid_stairs: bool = False
@@ -59,6 +60,8 @@ PROFILES = {
         avoid_unpaved=True,
         requires_width=1.2,  # ADA minimum 36 inches = ~0.9m, prefer wider
         max_slope=8.33,  # ADA max ramp slope
+        tactile_weight=0.5,  # Wheelchair users benefit from properly installed tactile paving (implies curb ramps and ADA compliance)
+        sidewalk_weight=0.8, # Strong preference for explicit sidewalks over general paths
     ),
 
     "blind": AccessibilityProfile(
@@ -139,6 +142,52 @@ PROFILES = {
 def get_profile(name: str) -> AccessibilityProfile:
     """Get an accessibility profile by name."""
     return PROFILES.get(name, PROFILES["default"])
+
+
+def get_combined_profile(names: list[str]) -> AccessibilityProfile:
+    """Combine multiple accessibility profiles into a single composite profile."""
+    if not names:
+        return PROFILES["default"]
+        
+    profiles = [get_profile(name) for name in names]
+    
+    if len(profiles) == 1:
+        return profiles[0]
+
+    # Merge logic
+    name = "combined_" + "_".join(names)
+    display_name = " + ".join(p.display_name for p in profiles)
+    description = "Combined profile: " + ", ".join(p.name for p in profiles)
+
+    combined = AccessibilityProfile(
+        name=name,
+        display_name=display_name,
+        description=description,
+        slope_weight=max(p.slope_weight for p in profiles),
+        surface_weight=max(p.surface_weight for p in profiles),
+        noise_weight=max(p.noise_weight for p in profiles),
+        crowd_weight=max(p.crowd_weight for p in profiles),
+        lighting_weight=max(p.lighting_weight for p in profiles),
+        stairs_penalty=max(p.stairs_penalty for p in profiles),
+        kerb_weight=max(p.kerb_weight for p in profiles),
+        crossing_signal_weight=max(p.crossing_signal_weight for p in profiles),
+        tactile_weight=max(p.tactile_weight for p in profiles),
+        sidewalk_weight=max(p.sidewalk_weight for p in profiles),
+        avoid_stairs=any(p.avoid_stairs for p in profiles),
+        avoid_unpaved=any(p.avoid_unpaved for p in profiles),
+    )
+
+    # Merge width: need the maximum required width
+    widths = [p.requires_width for p in profiles if p.requires_width is not None]
+    if widths:
+        combined.requires_width = max(widths)
+
+    # Merge slope: need the minimum max_slope (most restrictive)
+    slopes = [p.max_slope for p in profiles if p.max_slope is not None]
+    if slopes:
+        combined.max_slope = min(slopes)
+
+    return combined
 
 
 def list_profiles() -> list[dict]:
