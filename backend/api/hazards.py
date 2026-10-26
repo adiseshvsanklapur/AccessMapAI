@@ -19,7 +19,7 @@ if SUPABASE_URL and SUPABASE_KEY:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 else:
     supabase = None
-    print("WARNING: Supabase credentials not found. Hazards will not be saved.")
+    print("WARNING: Supabase credentials not found. Hazards are kept in memory until restart.")
 
 class HazardReport(BaseModel):
     id: str
@@ -69,7 +69,13 @@ def _refresh_cache(force=False):
 @router.post("/hazards", response_model=HazardReport)
 def report_hazard(payload: HazardPayload):
     if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
+        hazard = HazardReport(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.utcnow().isoformat(),
+            **payload.model_dump(),
+        )
+        _cache_data.append(hazard)
+        return hazard
 
     new_hazard = {
         "lat": payload.lat,

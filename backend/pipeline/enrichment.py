@@ -84,7 +84,7 @@ def run_pipeline(
     # Step 2: Elevation
     if not skip_elevation:
         print("\n[2/4] Enriching with elevation data...")
-        enrich_with_elevation(result.graph)
+        enrich_with_elevation(result.graph, cache_path=osm_dir / "elevation_grid.json")
     else:
         print("\n[2/4] Skipping elevation (skip_elevation=True)")
     # Step 3: Scoring
@@ -106,7 +106,7 @@ def run_pipeline(
     )
     # Step 3.5: Add proximity shortcuts AFTER scoring
     from .graph_builder import add_proximity_shortcuts
-    add_proximity_shortcuts(result.graph, max_distance_m=80)
+    add_proximity_shortcuts(result.graph, max_distance_m=80, data_dir=osm_dir)
     # Step 4: GTFS
     print("\n[4/4] Loading transit data...")
     result.gtfs = load_gtfs_data(osm_dir)

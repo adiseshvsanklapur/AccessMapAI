@@ -19,7 +19,7 @@ export const ACCESS_PROFILE_OPTIONS: {
   {
     value: "elderly",
     title: "Elderly",
-    description: "Rest stops & glare",
+    description: "Gentle slopes & good lighting",
   },
   {
     value: "neurodivergent",
@@ -29,6 +29,6 @@ export const ACCESS_PROFILE_OPTIONS: {
   {
     value: "temporary_injury",
     title: "Temporary injury",
-    description: "Shorter distances",
+    description: "No stairs, smooth surfaces",
   },
 ];

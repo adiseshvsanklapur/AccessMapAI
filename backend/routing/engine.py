@@ -130,6 +130,10 @@ def compute_edge_cost(
     tactile = _num(data.get("tactile_score"), 0.5)
     penalty -= profile.tactile_weight * tactile * 0.3
 
+    # Off-path connectors (gap bridges, open-area hops) are a last resort
+    if data.get("is_shortcut", False):
+        penalty += 0.6
+
     # Explicit sidewalk bonus
     if data.get("is_sidewalk", False):
         penalty -= profile.sidewalk_weight * 0.4
@@ -201,7 +205,7 @@ def _build_node_kdtree(G: nx.Graph) -> tuple[KDTree, list]:
 # ---------------------------------------------------------------------------
 def _generate_explanation(
     path_edges: list[dict],
-    profile: AccessibilityProfile,
+    profile_names: list[str],
 ) -> str:
     """Generate a human-readable explanation of why this route was chosen."""
     reasons = []
@@ -220,10 +224,6 @@ def _generate_explanation(
     sidewalk_ratio = sum(1 for e in path_edges if e.get("is_sidewalk")) / len(path_edges) if path_edges else 0
     reasons.append(f"This route is {total_dist:.0f} meters long")
 
-    # Base insights based on the combined profile name string
-    # combined.name might look like "combined_wheelchair_blind"
-    profile_names = profile.name.replace("combined_", "").split("_") if "combined_" in profile.name else [profile.name]
-    
     if "wheelchair" in profile_names:
         if not has_stairs:
             reasons.append("avoiding all stairs")
@@ -282,7 +282,7 @@ def _generate_explanation(
     elif avg_lighting < 0.3:
         reasons.append("(note: some sections have limited lighting)")
 
-    return ", ".join(reasons) + "."
+    return ", ".join(dict.fromkeys(reasons)) + "."  # dedupe phrases shared by combined profiles
 
 
 def _compute_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -325,67 +325,61 @@ def _turn_instruction(angle_change: float) -> str:
 def _generate_directions(
     path_coords: list[dict],
     path_edges: list[dict],
+    min_leg_m: float = 12.0,
 ) -> list[dict]:
-    """Generate step-by-step text directions from a route path."""
-    if len(path_coords) < 2:
+    """
+    Turn a path into steps. Each step is a manoeuvre followed by the distance
+    walked until the next one. Wiggles shorter than `min_leg_m` are folded into
+    the current leg so the list isn't full of 3m "bear left"s.
+    """
+    if len(path_coords) < 2 or not path_edges:
         return []
 
-    steps = []
+    def bearing(i: int) -> float:
+        a, b = path_coords[i], path_coords[i + 1]
+        return _compute_bearing(a["lat"], a["lon"], b["lat"], b["lon"])
 
-    # First step: head in initial direction
-    p0, p1 = path_coords[0], path_coords[1]
-    bearing = _compute_bearing(p0["lat"], p0["lon"], p1["lat"], p1["lon"])
-    direction = _bearing_to_direction(bearing)
+    def surface(e: dict) -> str:
+        sfc = e.get("surface") or "unknown"
+        return "off-path" if e.get("is_shortcut") else sfc
 
-    steps.append({
-        "step": 1,
-        "instruction": f"Head {direction}",
-        "distance_m": round(path_edges[0].get("distance_m", 0), 1) if path_edges else 0,
-        "surface": path_edges[0].get("surface", "paved") if path_edges else "unknown",
-    })
+    legs = [{
+        "instruction": f"Head {_bearing_to_direction(bearing(0))}",
+        "distance_m": _num(path_edges[0].get("distance_m"), 0),
+        "surface": surface(path_edges[0]),
+    }]
+    leg_bearing = bearing(0)
 
-    # Subsequent steps: detect turns
-    prev_bearing = bearing
-    cumulative_dist = path_edges[0].get("distance_m", 0) if path_edges else 0
-
-    for i in range(1, len(path_coords) - 1):
-        p_prev, p_curr, p_next = path_coords[i-1], path_coords[i], path_coords[i+1]
-        new_bearing = _compute_bearing(p_curr["lat"], p_curr["lon"], p_next["lat"], p_next["lon"])
-
-        # Calculate turn angle (-180 to 180)
-        angle_change = new_bearing - prev_bearing
-        if angle_change > 180:
-            angle_change -= 360
-        elif angle_change < -180:
-            angle_change += 360
-
-        edge_dist = path_edges[i].get("distance_m", 0) if i < len(path_edges) else 0
-
-        # Only report significant turns (> 20 degrees)
-        if abs(angle_change) > 20:
-            turn = _turn_instruction(angle_change)
-            surface = path_edges[i].get("surface", "paved") if i < len(path_edges) else "unknown"
-
-            steps.append({
-                "step": len(steps) + 1,
-                "instruction": f"In {round(cumulative_dist)}m, {turn}",
-                "distance_m": round(edge_dist, 1),
-                "surface": surface,
+    for i in range(1, len(path_edges)):
+        e = path_edges[i]
+        dist = _num(e.get("distance_m"), 0)
+        new_bearing = bearing(i)
+        angle = (new_bearing - leg_bearing + 180) % 360 - 180
+        if abs(angle) > 30 and legs[-1]["distance_m"] >= min_leg_m:
+            legs.append({
+                "instruction": _turn_instruction(angle).capitalize(),
+                "distance_m": dist,
+                "surface": surface(e),
             })
-            cumulative_dist = edge_dist
         else:
-            cumulative_dist += edge_dist
+            legs[-1]["distance_m"] += dist
+        leg_bearing = new_bearing
 
-        prev_bearing = new_bearing
-
-    # Final step: arrive
+    steps = [
+        {
+            "step": i + 1,
+            "instruction": leg["instruction"],
+            "distance_m": round(leg["distance_m"]),
+            "surface": leg["surface"],
+        }
+        for i, leg in enumerate(legs)
+    ]
     steps.append({
         "step": len(steps) + 1,
-        "instruction": f"Continue {round(cumulative_dist)}m to your destination",
-        "distance_m": round(cumulative_dist, 1),
-        "surface": "paved",
+        "instruction": "Arrive at your destination",
+        "distance_m": 0,
+        "surface": "",
     })
-
     return steps
 
 
@@ -562,6 +556,18 @@ class RoutingEngine:
             "tactile": sum(_num(e.get("tactile_score"), 0.5) for e in path_edges) / n_edges,
         }
 
+        # Overall = the route's factor scores weighted by what *this* profile cares about,
+        # so the same path scores differently for a wheelchair user vs. a blind user.
+        weights = {
+            "slope": profile.slope_weight, "surface": profile.surface_weight,
+            "noise": profile.noise_weight, "crowd": profile.crowd_weight,
+            "lighting": profile.lighting_weight, "kerb": profile.kerb_weight,
+            "crossing_signals": profile.crossing_signal_weight, "tactile": profile.tactile_weight,
+        }
+        total_w = sum(weights.values())
+        if total_w > 0:
+            scores["overall"] = sum(scores[k] * w for k, w in weights.items()) / total_w
+
         # ---- Hazards on the way -------------------------------------------------
         # Scan path nodes vs. reported hazards that apply to the user's profile.
         # Hazards within 60m of the path produce a penalty (closer = bigger).
@@ -623,7 +629,7 @@ class RoutingEngine:
             },
         }
 
-        explanation = _generate_explanation(path_edges, profile)
+        explanation = _generate_explanation(path_edges, profile_names)
         if hazards_on_route:
             sev_high = sum(1 for h in hazards_on_route if h["severity"] == "high")
             sev_med = sum(1 for h in hazards_on_route if h["severity"] == "medium")

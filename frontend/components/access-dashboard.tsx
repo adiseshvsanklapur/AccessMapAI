@@ -162,7 +162,7 @@ export function AccessDashboard() {
     signingOut,
     signOut,
   } = useAuth();
-  const [selectedProfiles, setSelectedProfiles] = useState<string[]>([]);
+  const [selectedProfiles, setSelectedProfiles] = useState<string[]>(["wheelchair"]);
   const [syncedRoutingFromAccount, setSyncedRoutingFromAccount] = useState(false);
   const [layers, setLayers] = useState<MapLayerToggle>(defaultLayers);
   const [consentGeminiTerms, setConsentGeminiTerms] = useState(true);
@@ -187,11 +187,13 @@ export function AccessDashboard() {
   const [hazardDesc, setHazardDesc] = useState("");
   const [hazardProfiles, setHazardProfiles] = useState<string[]>(["wheelchair", "blind"]);
   const [submittingHazard, setSubmittingHazard] = useState(false);
+  const [hazardError, setHazardError] = useState<string | null>(null);
 
   // Gemini state
   const [geminiLoading, setGeminiLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<SidewalkAnalysisResult | null>(null);
   const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [geminiPreview, setGeminiPreview] = useState<string | null>(null);
   const [routePanelOpen, setRoutePanelOpen] = useState(true);
 
   const buildLabel =
@@ -238,7 +240,7 @@ export function AccessDashboard() {
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [origin, destination, selectedProfiles]);
+  }, [origin, destination, selectedProfiles, activeHazards]);
 
   // Fetch heatmap & transit on mount
   useEffect(() => {
@@ -284,11 +286,16 @@ export function AccessDashboard() {
   // Handle Gemini upload
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
     if (!file || !consentGeminiTerms) return;
 
     setGeminiLoading(true);
     setGeminiResult(null);
     setGeminiError(null);
+    setGeminiPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
 
     try {
       const result = await analyzeSidewalkImage(file);
@@ -309,6 +316,7 @@ export function AccessDashboard() {
     setDraftHazardLatLon(null);
     setClickMode("origin");
     setHazardDesc("");
+    setHazardError(null);
   };
 
   const enterHazardMode = () => {
@@ -319,6 +327,7 @@ export function AccessDashboard() {
   const submitHazard = async () => {
     if (!draftHazardLatLon) return;
     setSubmittingHazard(true);
+    setHazardError(null);
     try {
       await reportHazard({
         lat: draftHazardLatLon[0],
@@ -331,7 +340,7 @@ export function AccessDashboard() {
       setActiveHazards(updated);
       cancelHazard();
     } catch (e) {
-      console.error(e);
+      setHazardError(e instanceof Error ? e.message : "Could not submit hazard");
     } finally {
       setSubmittingHazard(false);
     }
@@ -411,6 +420,8 @@ export function AccessDashboard() {
             })}
           </div>
         </div>
+
+        {hazardError && <p className="text-red-400 text-xs">{hazardError}</p>}
 
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" size="sm" onClick={cancelHazard}>Cancel</Button>
@@ -662,8 +673,12 @@ export function AccessDashboard() {
                         <div className="flex-1 space-y-1">
                           <p className="text-sm font-medium leading-tight">{step.instruction}</p>
                           <p className="text-xs text-muted-foreground">
-                            {step.distance_m > 0 ? `${step.distance_m}m · ` : ""}
-                            <span className="capitalize">{step.surface.replace("_", " ")}</span>
+                            {[
+                              step.distance_m > 0 ? `${step.distance_m}m` : null,
+                              step.surface && step.surface !== "unknown" ? step.surface.replace(/_/g, " ") : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
                           </p>
                         </div>
                       </li>
@@ -760,7 +775,7 @@ export function AccessDashboard() {
                   checked={layers.hazards}
                   onCheckedChange={(c) => setLayers((s) => ({ ...s, hazards: c }))}
                   label="User hazards"
-                  description="Reports from Supabase"
+                  description="Community-reported obstacles"
                   legend={[{ icon: AlertTriangle, color: "#ef4444", label: "Active hazard" }]}
                 />
               </div>
@@ -939,8 +954,8 @@ export function AccessDashboard() {
                       <>
                         <Upload className="size-9 text-muted-foreground/70" aria-hidden />
                         <div className="space-y-1">
-                          <p className="font-medium text-base">Click or drag & drop a photo</p>
-                          <p className="mx-auto max-w-md text-muted-foreground text-sm">Requires Responsible Use confirmation below.</p>
+                          <p className="font-medium text-base">Click to upload a photo</p>
+                          <p className="mx-auto max-w-md text-muted-foreground text-sm">A sidewalk, crosswalk, curb ramp, or building entrance.</p>
                         </div>
                         <Button type="button" variant="secondary" className="pointer-events-none">Choose file…</Button>
                       </>
@@ -950,6 +965,14 @@ export function AccessDashboard() {
                 </>
               ) : (
                 <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                  {geminiPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={geminiPreview}
+                      alt="Uploaded street photo"
+                      className="max-h-72 w-full rounded-xl border border-border object-cover"
+                    />
+                  )}
                   <div className="flex items-center justify-between gap-4 p-4 rounded-xl border border-border bg-muted/40">
                     <div>
                       <p className="text-sm text-muted-foreground uppercase tracking-wider font-semibold mb-1">Overall assessment</p>
@@ -1015,9 +1038,9 @@ export function AccessDashboard() {
         <div className="mx-auto flex max-w-[1680px] flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <p>AccessMap AI — Next.js 15 · FastAPI · NetworkX · OSM · Open-Meteo</p>
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">OSS tiles</Badge>
-            <Badge variant="secondary">Privacy-first</Badge>
-            <Badge variant="secondary">19.7K nodes</Badge>
+            <Badge variant="secondary">OpenStreetMap</Badge>
+            <Badge variant="secondary">Unitrans GTFS</Badge>
+            <Badge variant="secondary">Davis, CA</Badge>
           </div>
         </div>
       </footer>

@@ -118,12 +118,18 @@ export function AccessibilityMapboxMap({
     const lngs = coords.map(([lon]) => lon);
     const lats = coords.map(([, lat]) => lat);
 
+    // Keep the route clear of the floating panels (route analysis left, layers right) on wide maps.
+    const wide = mapRef.current.getContainer().clientWidth >= 900;
     mapRef.current.fitBounds(
       [
         [Math.min(...lngs), Math.min(...lats)],
         [Math.max(...lngs), Math.max(...lats)],
       ],
-      { padding: 60, maxZoom: 17, duration: 800 }
+      {
+        padding: wide ? { top: 90, bottom: 60, left: 430, right: 370 } : 60,
+        maxZoom: 17,
+        duration: 800,
+      }
     );
   }, [routeGeoJSON]);
 
@@ -259,6 +265,11 @@ export function AccessibilityMapboxMap({
       mapStyle={styleUrl}
       mapboxAccessToken={MAPBOX_TOKEN}
       onClick={handleClick}
+      onLoad={(e) => {
+        // The container grows when the sidebar fills in; Mapbox only listens to window resizes.
+        const map = e.target;
+        new ResizeObserver(() => map.resize()).observe(map.getContainer());
+      }}
       doubleClickZoom={false}
       scrollZoom
       touchZoomRotate

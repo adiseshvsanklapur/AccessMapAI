@@ -451,62 +451,71 @@ def load_lighting(data_dir: Path) -> list[dict]:
     print(f"  Loaded {len(lights)} lighting features from local file")
     return lights
 
-def add_proximity_shortcuts(G: nx.Graph, max_distance_m: float = 80.0):
+def add_proximity_shortcuts(G: nx.Graph, max_distance_m: float = 80.0, data_dir: Optional[Path] = None):
     """
-    Add direct edges between nearby nodes that have no short path.
-    This lets routing cut across open fields, parks, and plazas
-    instead of going all the way around them.
+    Bridge gaps between disconnected path segments (OSM sidewalks are often
+    drawn as separate pieces). Only nodes in *different* connected components
+    are joined, and never by a line that cuts through a building footprint,
+    so routes follow real paths wherever they exist.
     """
     from scipy.spatial import KDTree
+    from shapely.geometry import LineString, Polygon
+    from shapely.strtree import STRtree
     import numpy as np
 
-    # Build spatial index
-    node_ids = []
-    coords = []
-    for nid, data in G.nodes(data=True):
-        if "lat" in data and "lon" in data:
-            node_ids.append(nid)
-            coords.append([data["lat"], data["lon"]])
+    comp_of = {}
+    for ci, comp in enumerate(nx.connected_components(G)):
+        for n in comp:
+            comp_of[n] = ci
 
-    if len(coords) < 2:
+    node_ids = [n for n, d in G.nodes(data=True) if "lat" in d and "lon" in d]
+    if len(node_ids) < 2:
         return 0
-
-    coords_arr = np.array(coords)
+    coords_arr = np.array([[G.nodes[n]["lat"], G.nodes[n]["lon"]] for n in node_ids])
     tree = KDTree(coords_arr)
 
-    # ~80m in lat/lon degrees (rough approximation)
-    radius_deg = max_distance_m / 111_000
+    footprints = []
+    if data_dir is not None and (data_dir / "buildings.json").exists():
+        for el in _parse_osm_geom_json(data_dir / "buildings.json"):
+            geom = el.get("geometry") or []
+            if el.get("type") == "way" and len(geom) >= 4:
+                poly = Polygon([(p["lon"], p["lat"]) for p in geom])
+                if poly.is_valid:
+                    footprints.append(poly)
+    building_index = STRtree(footprints) if footprints else None
 
+    radius_deg = max_distance_m / 111_000
     added = 0
     for i, nid in enumerate(node_ids):
-        neighbors = tree.query_ball_point(coords_arr[i], radius_deg)
-        for j in neighbors:
+        for j in tree.query_ball_point(coords_arr[i], radius_deg):
             other = node_ids[j]
-            if nid == other:
-                continue
-            if G.has_edge(nid, other):
+            if j <= i or comp_of[nid] == comp_of[other] or G.has_edge(nid, other):
                 continue
 
-            # Calculate actual distance in meters
             lat1, lon1 = coords_arr[i]
             lat2, lon2 = coords_arr[j]
             dlat = (lat2 - lat1) * 111_000
             dlon = (lon2 - lon1) * 111_000 * np.cos(np.radians((lat1 + lat2) / 2))
-            dist_m = np.sqrt(dlat**2 + dlon**2)
-
-            if dist_m > max_distance_m or dist_m < 5:
+            dist_m = float(np.sqrt(dlat**2 + dlon**2))
+            if dist_m > max_distance_m:
                 continue
 
-            # Add a shortcut edge with "open terrain" properties
+            if building_index is not None:
+                seg = LineString([(lon1, lat1), (lon2, lat2)])
+                if any(footprints[k].crosses(seg) or footprints[k].contains(seg)
+                       for k in building_index.query(seg)):
+                    continue
+
+            # Off-path connector: short hop across open ground / an unmapped gap
             G.add_edge(nid, other,
                 distance_m=round(dist_m, 1),
-                surface="grass",
-                surface_score=0.5,      # grass/open terrain
+                surface="unmapped",
+                surface_score=0.5,
                 has_stairs=False,
                 is_sidewalk=False,
                 is_shortcut=True,
             )
             added += 1
 
-    print(f"  Added {added} proximity shortcut edges (max {max_distance_m}m)")
+    print(f"  Added {added} gap-bridging connector edges (max {max_distance_m}m)")
     return added

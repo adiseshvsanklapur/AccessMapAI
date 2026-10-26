@@ -2,10 +2,13 @@
 elevation.py — Fetch elevation data from Open-Meteo API and compute slope per edge.
 
 Uses the free Open-Meteo Elevation API (no key needed, up to 100 coords per request).
+Elevation is sampled on a ~150m grid once and cached in data/osm/elevation_grid.json.
 """
 
-import asyncio
+import json
 import math
+from pathlib import Path
+
 import httpx
 import networkx as nx
 from typing import Optional
@@ -15,71 +18,53 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/elevation"
 BATCH_SIZE = 100  # max coordinates per request
 
 
-async def _fetch_elevations_batch(
-    client: httpx.AsyncClient,
-    coords: list[tuple[int, float, float]],  # (node_id, lat, lon)
-) -> dict[int, float]:
-    """Fetch elevations for a batch of coordinates."""
-    lats = ",".join(str(c[1]) for c in coords)
-    lons = ",".join(str(c[2]) for c in coords)
-
-    try:
-        resp = await client.get(
-            OPEN_METEO_URL,
-            params={"latitude": lats, "longitude": lons},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        elevations = data.get("elevation", [])
-
-        result = {}
-        for i, (node_id, _, _) in enumerate(coords):
-            if i < len(elevations):
-                result[node_id] = elevations[i]
-        return result
-
-    except Exception as e:
-        print(f"  Warning: Elevation batch failed: {e}")
-        return {}
+GRID_STEP_DEG = 0.0014  # ~150m; the Open-Meteo DEM is ~90m, so finer adds only noise
 
 
-async def fetch_all_elevations(G: nx.Graph) -> dict[int, float]:
-    """
-    Fetch elevations for all nodes in the graph.
-    Returns {node_id: elevation_meters}.
-    """
-    # Collect all node coordinates
-    coords = []
-    for node_id, data in G.nodes(data=True):
-        if "lat" in data and "lon" in data:
-            coords.append((node_id, data["lat"], data["lon"]))
+def _fetch_elevation_grid(G: nx.Graph) -> dict:
+    """Sample elevation on a regular grid over the graph's bounding box."""
+    import time
+    import numpy as np
 
-    print(f"  Fetching elevations for {len(coords)} nodes...")
+    lats = [d["lat"] for _, d in G.nodes(data=True) if "lat" in d]
+    lons = [d["lon"] for _, d in G.nodes(data=True) if "lon" in d]
+    grid_lats = np.arange(min(lats) - GRID_STEP_DEG, max(lats) + 2 * GRID_STEP_DEG, GRID_STEP_DEG)
+    grid_lons = np.arange(min(lons) - GRID_STEP_DEG, max(lons) + 2 * GRID_STEP_DEG, GRID_STEP_DEG)
+    points = [(la, lo) for la in grid_lats for lo in grid_lons]
+    print(f"  Fetching {len(points)} grid elevations in {math.ceil(len(points) / BATCH_SIZE)} requests...")
 
-    # Split into batches
-    batches = [coords[i:i + BATCH_SIZE] for i in range(0, len(coords), BATCH_SIZE)]
-    print(f"  {len(batches)} API batches needed")
+    elev = []
+    with httpx.Client(timeout=30.0) as client:
+        for i in range(0, len(points), BATCH_SIZE):
+            batch = points[i:i + BATCH_SIZE]
+            for attempt in range(5):
+                resp = client.get(OPEN_METEO_URL, params={
+                    "latitude": ",".join(f"{p[0]:.5f}" for p in batch),
+                    "longitude": ",".join(f"{p[1]:.5f}" for p in batch),
+                })
+                if resp.status_code != 429:
+                    break
+                time.sleep(15 * (attempt + 1))
+            resp.raise_for_status()
+            elev.extend(resp.json()["elevation"])
+            time.sleep(10)  # free tier counts each coordinate: ~600/min
 
-    elevations = {}
-    async with httpx.AsyncClient() as client:
-        # Process batches with rate limiting (max 5 concurrent)
-        semaphore = asyncio.Semaphore(5)
+    return {
+        "lats": grid_lats.round(6).tolist(),
+        "lons": grid_lons.round(6).tolist(),
+        "elevation": np.array(elev).reshape(len(grid_lats), len(grid_lons)).tolist(),
+    }
 
-        async def fetch_with_limit(batch):
-            async with semaphore:
-                result = await _fetch_elevations_batch(client, batch)
-                await asyncio.sleep(0.1)  # small delay to be polite
-                return result
 
-        tasks = [fetch_with_limit(batch) for batch in batches]
-        results = await asyncio.gather(*tasks)
+def _interpolate_nodes(G: nx.Graph, grid: dict) -> dict[int, float]:
+    from scipy.interpolate import RegularGridInterpolator
 
-        for result in results:
-            elevations.update(result)
-
-    print(f"  Got elevations for {len(elevations)}/{len(coords)} nodes")
-    return elevations
+    interp = RegularGridInterpolator(
+        (grid["lats"], grid["lons"]), grid["elevation"], bounds_error=False, fill_value=None
+    )
+    ids = [n for n, d in G.nodes(data=True) if "lat" in d]
+    values = interp([(G.nodes[n]["lat"], G.nodes[n]["lon"]) for n in ids])
+    return {n: float(v) for n, v in zip(ids, values)}
 
 
 def apply_elevations_to_graph(G: nx.Graph, elevations: dict[int, float]) -> None:
@@ -110,13 +95,19 @@ def apply_elevations_to_graph(G: nx.Graph, elevations: dict[int, float]) -> None
     print(f"  Computed slope for {slopes_computed} edges")
 
 
-def enrich_with_elevation(G: nx.Graph) -> None:
-    """Main entry point: fetch elevations and compute slopes."""
+def enrich_with_elevation(G: nx.Graph, cache_path: Optional[Path] = None) -> None:
+    """Main entry point: elevation grid (cached on disk) -> node elevations -> edge slopes."""
     print("\n[Elevation] Fetching elevation data...")
 
     try:
-        elevations = asyncio.run(fetch_all_elevations(G))
-        apply_elevations_to_graph(G, elevations)
+        if cache_path is not None and cache_path.exists():
+            grid = json.loads(cache_path.read_text())
+            print(f"  Loaded cached elevation grid from {cache_path.name}")
+        else:
+            grid = _fetch_elevation_grid(G)
+            if cache_path is not None:
+                cache_path.write_text(json.dumps(grid))
+        apply_elevations_to_graph(G, _interpolate_nodes(G, grid))
     except Exception as e:
         print(f"  Warning: Elevation enrichment failed: {e}")
         print("  Continuing without elevation data (slopes will be None)")

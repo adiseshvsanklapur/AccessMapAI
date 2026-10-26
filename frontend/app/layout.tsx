@@ -20,9 +20,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AccessMap AI — Frontend shell",
+  title: "AccessMap AI",
   description:
-    "Interactive accessibility map UI: profiles, explanations, overlays, and Gemini-style image review (visual only).",
+    "Accessibility-first navigation: profile-aware routing, community hazard reports, and AI sidewalk analysis.",
 };
 
 export default function RootLayout({

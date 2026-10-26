@@ -128,7 +128,7 @@ Run:
 uvicorn main:app --reload --port 8000
 ```
 
-The pipeline boots once at startup (~5s) and builds the enriched pedestrian graph (~20k nodes, ~21k edges).
+The pipeline boots once at startup (~2s) and builds the enriched pedestrian graph (~18k nodes, ~35k edges incl. gap-bridging connectors).
 
 ### 3. Frontend (`frontend/`)
 
@@ -169,9 +169,9 @@ Open:
 | Var              | Required           | Notes                                                                     |
 | ---------------- | ------------------ | ------------------------------------------------------------------------- |
 | `GEMINI_API_KEY` | for image analysis | Set to `mock` to return a canned response (handy without burning credits) |
-| `SUPABASE_URL`   | yes                | For hazard CRUD                                                           |
-| `SUPABASE_KEY`   | yes                | `service_role` key, server-only                                           |
-| `SKIP_ELEVATION` | optional           | `true` to skip Open-Meteo elevation calls (faster boot, slope=0)          |
+| `SUPABASE_URL`   | optional           | For persistent hazards; without it hazards live in memory until restart   |
+| `SUPABASE_KEY`   | optional           | `service_role` key, server-only                                           |
+| `SKIP_ELEVATION` | optional           | `true` to skip elevation entirely (slope=0)                               |
 
 ### Frontend (`frontend/.env.local`)
 
@@ -301,7 +301,7 @@ The Directions card in `/app` can read each turn out loud — useful for blind /
 `backend/pipeline/enrichment.py` runs once at server startup (`lifespan`).
 
 1. **`graph_builder.py`** — Loads OSM JSON (sidewalks, paths, steps), de-dupes nodes, builds a NetworkX graph with edges tagged `surface`, `width`, `incline`, `kerb`, `tactile_paving`, `lit`, `wheelchair`, `has_stairs`, `is_sidewalk`.
-2. **`elevation.py`** — Batches edge midpoints to **Open-Meteo Elevation** (free, no key) → computes `slope` (%) per edge from rise/run.
+2. **`elevation.py`** — Samples **Open-Meteo Elevation** (free, no key) on a ~150 m grid, caches it in `data/osm/elevation_grid.json`, interpolates per node → `slope` (%) per edge from rise/run. Delete the cache to re-fetch (~8 min, rate-limited).
 3. **`gtfs.py`** — Loads Unitrans GTFS → `stops`, `routes`.
 4. **`scoring.py`** — Computes derived per-edge scores:
    | Score | Method |
@@ -328,7 +328,7 @@ The Directions card in `/app` can read each turn out loud — useful for blind /
 | Street lighting              | `data/osm/davis_lighting.json`         | 1,104                               |
 | Unitrans GTFS                | `data/gtfs/unitrans/`                  | 292 stops · 22 routes · 7,673 trips |
 
-Built graph: **~19,700 nodes · ~20,700 edges**, ~5 s pipeline boot.
+Built graph: **~18,300 nodes · ~19,300 path edges** (+ connectors bridging gaps between disconnected OSM segments, never through buildings), ~2 s boot. Data is clipped to a Davis, CA bounding box.
 
 ---
 
@@ -339,6 +339,7 @@ Built graph: **~19,700 nodes · ~20,700 edges**, ~5 s pipeline boot.
 - **`POST /hazards`** — payload `{lat, lon, type, description, affected_profiles[]}`. Inserts a row, busts the in-memory cache.
 - **`GET /hazards`** — returns all current hazards (used by the map markers).
 - **30-second in-process cache** so `/route` doesn't hammer Supabase on every call.
+- Without Supabase configured, hazards are stored in memory (handy for demos; cleared on restart).
 
 Frontend flow: in `/app`, click "Report hazard" → click on the map → fill out type, description, and affected profiles → submit. The pin appears immediately on the map and starts affecting routes.
 
@@ -462,7 +463,7 @@ All endpoints are FastAPI auto-documented at `http://localhost:8000/docs`.
 ## Limitations & honest notes
 
 - **Geographic scope**: dataset is currently Davis, CA + UC Davis. Adding a new city = drop fresh OSM extracts in `data/osm/` and re-boot.
-- **Elevation**: Open-Meteo is free but rate-limited; `SKIP_ELEVATION=true` is supported for fast iteration.
+- **Elevation**: Open-Meteo is free but rate-limited, so the grid is cached in the repo; `SKIP_ELEVATION=true` disables slopes entirely.
 - **Heuristics**: noise/crowd/lighting are derived (not measured). They're calibrated to Davis hotspots; they will need recalibration for other cities.
 - **Image analysis**: Gemini is a probabilistic model. The post-processor handles the most common score-inversion failure mode but cannot catch subtle errors.
 - **Hazard table**: the schema is intentionally simple. There's no expiry/voting system yet — all reported hazards are treated as currently active.
