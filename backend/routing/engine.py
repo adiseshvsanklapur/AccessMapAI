@@ -11,6 +11,7 @@ from scipy.spatial import KDTree
 import numpy as np
 from typing import Optional
 
+from pipeline.scoring import NO_FEATURE_NEARBY
 from .profiles import AccessibilityProfile, get_profile, get_combined_profile
 
 
@@ -326,11 +327,16 @@ def _generate_directions(
     path_coords: list[dict],
     path_edges: list[dict],
     min_leg_m: float = 12.0,
+    turn_deg: float = 30.0,
 ) -> list[dict]:
     """
     Turn a path into steps. Each step is a manoeuvre followed by the distance
-    walked until the next one. Wiggles shorter than `min_leg_m` are folded into
-    the current leg so the list isn't full of 3m "bear left"s.
+    walked until the next one.
+
+    Turns are measured against the bearing the current leg started on, so a
+    corner drawn as several small bends still adds up to a turn. A leg shorter
+    than `min_leg_m` is merged with the next manoeuvre (its turn is recomputed
+    from the leg before it) instead of being dropped.
     """
     if len(path_coords) < 2 or not path_edges:
         return []
@@ -339,38 +345,51 @@ def _generate_directions(
         a, b = path_coords[i], path_coords[i + 1]
         return _compute_bearing(a["lat"], a["lon"], b["lat"], b["lon"])
 
+    def delta(to: float, frm: float) -> float:
+        return (to - frm + 180) % 360 - 180
+
     def surface(e: dict) -> str:
-        sfc = e.get("surface") or "unknown"
-        return "off-path" if e.get("is_shortcut") else sfc
+        return "off-path" if e.get("is_shortcut") else (e.get("surface") or "unknown")
 
-    legs = [{
-        "instruction": f"Head {_bearing_to_direction(bearing(0))}",
-        "distance_m": _num(path_edges[0].get("distance_m"), 0),
-        "surface": surface(path_edges[0]),
-    }]
-    leg_bearing = bearing(0)
+    def new_leg(instruction: str, ref: float) -> dict:
+        return {"instruction": instruction, "ref": ref, "distance_m": 0.0, "surfaces": {}}
 
-    for i in range(1, len(path_edges)):
-        e = path_edges[i]
-        dist = _num(e.get("distance_m"), 0)
-        new_bearing = bearing(i)
-        angle = (new_bearing - leg_bearing + 180) % 360 - 180
-        if abs(angle) > 30 and legs[-1]["distance_m"] >= min_leg_m:
-            legs.append({
-                "instruction": _turn_instruction(angle).capitalize(),
-                "distance_m": dist,
-                "surface": surface(e),
-            })
-        else:
-            legs[-1]["distance_m"] += dist
-        leg_bearing = new_bearing
+    def add(leg: dict, e: dict) -> None:
+        d = _num(e.get("distance_m"), 0)
+        leg["distance_m"] += d
+        leg["surfaces"][surface(e)] = leg["surfaces"].get(surface(e), 0) + d
+
+    legs: list[dict] = []
+    for i, e in enumerate(path_edges):
+        b = bearing(i)
+        if not legs:
+            legs.append(new_leg(f"Head {_bearing_to_direction(b)}", b))
+        elif _num(e.get("distance_m"), 0) >= 1 and abs(delta(b, legs[-1]["ref"])) > turn_deg:
+            cur = legs[-1]
+            if cur["distance_m"] >= min_leg_m:
+                legs.append(new_leg(_turn_instruction(delta(b, cur["ref"])).capitalize(), b))
+            elif len(legs) == 1:
+                # Short first hop: just head the way the route really goes
+                cur["instruction"], cur["ref"] = f"Head {_bearing_to_direction(b)}", b
+            else:
+                # Short jog: fold it into the previous leg and re-judge the turn from there
+                prev = legs[-2]
+                for k, v in cur["surfaces"].items():
+                    prev["surfaces"][k] = prev["surfaces"].get(k, 0) + v
+                prev["distance_m"] += cur["distance_m"]
+                legs.pop()
+                angle = delta(b, prev["ref"])
+                if abs(angle) > turn_deg:
+                    legs.append(new_leg(_turn_instruction(angle).capitalize(), b))
+        add(legs[-1], e)
 
     steps = [
         {
             "step": i + 1,
             "instruction": leg["instruction"],
             "distance_m": round(leg["distance_m"]),
-            "surface": leg["surface"],
+            # Label each leg by the surface covering most of its length
+            "surface": max(leg["surfaces"], key=leg["surfaces"].get) if leg["surfaces"] else "unknown",
         }
         for i, leg in enumerate(legs)
     ]
@@ -552,9 +571,13 @@ class RoutingEngine:
             "crowd": 1.0 - (sum(_num(e.get("crowd_score"), 0.5) for e in path_edges) / n_edges),
             "lighting": sum(_num(e.get("lighting_score"), 0.5) for e in path_edges) / n_edges,
             "kerb": sum(_num(e.get("kerb_score"), 0.7) for e in path_edges) / n_edges,
-            "crossing_signals": sum(_num(e.get("crossing_signal_score"), 0.5) for e in path_edges) / n_edges,
-            "tactile": sum(_num(e.get("tactile_score"), 0.5) for e in path_edges) / n_edges,
         }
+        # Crossing / tactile only where something is mapped nearby; with no data at all
+        # the factor is omitted rather than scored as bad.
+        for key, attr in (("crossing_signals", "crossing_signal_score"), ("tactile", "tactile_score")):
+            known = [_num(e.get(attr), 0.5) for e in path_edges if e.get(attr) not in (None, NO_FEATURE_NEARBY)]
+            if known:
+                scores[key] = sum(known) / len(known)
 
         # Overall = the route's factor scores weighted by what *this* profile cares about,
         # so the same path scores differently for a wheelchair user vs. a blind user.
@@ -564,6 +587,7 @@ class RoutingEngine:
             "lighting": profile.lighting_weight, "kerb": profile.kerb_weight,
             "crossing_signals": profile.crossing_signal_weight, "tactile": profile.tactile_weight,
         }
+        weights = {k: w for k, w in weights.items() if k in scores}
         total_w = sum(weights.values())
         if total_w > 0:
             scores["overall"] = sum(scores[k] * w for k, w in weights.items()) / total_w

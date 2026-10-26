@@ -900,7 +900,15 @@ export function AccessDashboard() {
                         </summary>
                         <div className="mt-2 space-y-2">
                           {Object.entries(SCORE_LABELS).map(([key, label]) => {
-                            const val = routeData.scores[key as keyof typeof routeData.scores] ?? 0;
+                            const val = routeData.scores[key as keyof typeof routeData.scores];
+                            if (val === undefined) {
+                              return (
+                                <div key={key} className="flex items-center gap-3 text-sm">
+                                  <span className="w-24 text-muted-foreground text-xs">{label}</span>
+                                  <span className="flex-1 text-muted-foreground text-xs italic">Not mapped near this route</span>
+                                </div>
+                              );
+                            }
                             const pct = Math.round(val * 100);
                             return (
                               <div key={key} className="flex items-center gap-3 text-sm">

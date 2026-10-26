@@ -17,8 +17,9 @@ export interface RouteScores {
   crowd: number;
   lighting: number;
   kerb: number;
-  crossing_signals: number;
-  tactile: number;
+  /** Omitted when no crossings / tactile paving are mapped near the route. */
+  crossing_signals?: number;
+  tactile?: number;
   hazards?: number;
 }
 

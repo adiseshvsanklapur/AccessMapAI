@@ -98,6 +98,7 @@ export function AccessibilityMapboxMap({
   const hasMapboxToken = Boolean(MAPBOX_TOKEN?.trim());
   const isDark = useDocumentDarkClass();
   const mapRef = useRef<MapRef>(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
   const [hoverHazardId, setHoverHazardId] = useState<string | null>(null);
   const safeOriginLatLon = toValidLatLng(originLatLon);
   const safeDestLatLon = toValidLatLng(destLatLon);
@@ -109,6 +110,15 @@ export function AccessibilityMapboxMap({
       ),
     [hazards],
   );
+
+  // The container grows when the sidebar fills in; Mapbox only listens to window resizes.
+  useEffect(() => {
+    const container = mapLoaded ? mapRef.current?.getContainer() : null;
+    if (!container) return;
+    const observer = new ResizeObserver(() => mapRef.current?.resize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [mapLoaded]);
 
   // Fit bounds when route changes
   useEffect(() => {
@@ -265,11 +275,7 @@ export function AccessibilityMapboxMap({
       mapStyle={styleUrl}
       mapboxAccessToken={MAPBOX_TOKEN}
       onClick={handleClick}
-      onLoad={(e) => {
-        // The container grows when the sidebar fills in; Mapbox only listens to window resizes.
-        const map = e.target;
-        new ResizeObserver(() => map.resize()).observe(map.getContainer());
-      }}
+      onLoad={() => setMapLoaded(true)}
       doubleClickZoom={false}
       scrollZoom
       touchZoomRotate

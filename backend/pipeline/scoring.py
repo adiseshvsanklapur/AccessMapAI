@@ -247,6 +247,12 @@ def compute_kerb_score(
     return best_score
 
 
+# Returned when no crossing / tactile feature is mapped nearby. That means
+# "no data" (OSM coverage gap), not a measured absence, so route summaries
+# leave these edges out instead of scoring them as poor.
+NO_FEATURE_NEARBY = 0.3
+
+
 # ---------------------------------------------------------------------------
 # Crossing Signal Score (for blind / low-vision users)
 # ---------------------------------------------------------------------------
@@ -266,9 +272,9 @@ def compute_crossing_signal_score(
 
     nearby_idx = acc_tree.query_ball_point([lat, lon], r=radius_deg)
     if not nearby_idx:
-        return 0.3  # no crossings nearby
+        return NO_FEATURE_NEARBY
 
-    best = 0.3
+    best = NO_FEATURE_NEARBY
     for idx in nearby_idx:
         if idx >= len(acc_data):
             continue
@@ -306,7 +312,7 @@ def compute_tactile_score(
 
     nearby_idx = acc_tree.query_ball_point([lat, lon], r=radius_deg)
     if not nearby_idx:
-        return 0.3  # no tactile features
+        return NO_FEATURE_NEARBY
 
     tactile_count = 0
     for idx in nearby_idx:
